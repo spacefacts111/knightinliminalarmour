@@ -49,14 +49,27 @@ def generate_image_and_caption():
         gem_page.goto("https://gemini.google.com/app", timeout=120000)
         gem_page.keyboard.press("Escape")
 
-        # Debug: log the URL and first 500 chars of HTML if the selector fails
-        gem_page.on("console", lambda msg: print(f"[PAGE LOG] {msg.text}"))
-        print("[DEBUG] Page URL:", gem_page.url)
+        # Handle possible consent redirect
+        if "consent.google.com" in gem_page.url:
+            print("[DEBUG] Consent page detected, accepting")
+            gem_page.wait_for_selector("button#introAgreeButton, button:text('I agree')", timeout=30000)
+            gem_page.click("button#introAgreeButton, button:text('I agree')", force=True)
+            gem_page.wait_for_navigation(timeout=60000)
+            print("[DEBUG] Now at:", gem_page.url)
 
-        # ==== Updated selector for prompt editor ====
-        # Wait for the QL editor div identified by its data-placeholder attribute
-        gem_page.wait_for_selector('div.ql-editor[data-placeholder="Ask Gemini"]', timeout=120000)
-        editor = gem_page.locator('div.ql-editor[data-placeholder="Ask Gemini"]')
+        # Wait for the prompt editor using multiple possible selectors
+        gem_page.wait_for_selector(
+            "div.ql-editor[data-placeholder='Ask Gemini'], "
+            "input-area-v2 .ql-editor, "
+            "rich-textarea .ql-editor",
+            timeout=120000
+        )
+        # Grab whichever editor appears first
+        editor = gem_page.locator(
+            "div.ql-editor[data-placeholder='Ask Gemini'], "
+            "input-area-v2 .ql-editor, "
+            "rich-textarea .ql-editor"
+        ).first
 
         prompt = random_prompt()
         print(f"[DEBUG] Prompt: {prompt}")
@@ -69,8 +82,9 @@ def generate_image_and_caption():
         gem_page.wait_for_selector(selector, timeout=120000)
         img_elem = gem_page.locator(selector).nth(-1)
         src = img_elem.get_attribute("src")
+        print(f"[DEBUG] Image URL: {src}")
 
-        # Download with authenticated context
+        # Download via authenticated request
         response = gem_context.request.get(src)
         data = response.body()
         filename = os.path.basename(src.split('?')[0]) + ".png"
@@ -88,6 +102,7 @@ def generate_image_and_caption():
         caption = next((t.strip() for t in reversed(texts) if 10 < len(t.strip()) < 300), None)
         if not caption:
             caption = "A place you’ve seen in dreams."
+        print(f"[DEBUG] Caption: {caption}")
 
         browser.close()
         return dst, caption
@@ -114,16 +129,19 @@ def run_once():
     h = hashlib.sha256(open(dst, 'rb').read()).hexdigest()
     if h in posted_hashes:
         os.remove(dst)
+        print("[DEBUG] Duplicate image, skipping")
         return
     post_via_ui(dst, caption)
     posted_hashes.add(h)
     save_posted_hashes(posted_hashes)
     os.remove(dst)
+    print("[DEBUG] Image posted and cleaned up")
 
 def schedule_posts():
     hours = sorted(random.sample(range(24), random.randint(1,4)))
     for h in hours:
         schedule.every().day.at(f"{h:02}:00").do(run_once)
+    print(f"[DEBUG] Scheduled posts at: {hours}")
 
 if __name__ == "__main__":
     run_once()
