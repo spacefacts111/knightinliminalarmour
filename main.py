@@ -58,15 +58,17 @@ def generate_image_and_caption():
         try:
             print("[DEBUG] LIVE MODE: Navigate to chat UI")
             page.goto("https://gemini.google.com/app")
+            page.keyboard.press("Escape")  # dismiss overlays
+            print("[DEBUG] Waiting for prompt editor")
             page.wait_for_selector("div.ql-editor[contenteditable='true']", timeout=60000)
             editor = page.locator("div.ql-editor[contenteditable='true']")
             prompt = random_prompt()
             print(f"[DEBUG] Prompt: {prompt}")
-            editor.click()
-            editor.fill(prompt)
+            editor.click(force=True)
+            editor.fill(prompt, force=True)
             editor.press("Enter")
+            print("[DEBUG] Prompt sent, waiting for generated image")
 
-            print("[DEBUG] Waiting for generated image element in chat")
             selector = "div.attachment-container.generated-images img.image"
             page.wait_for_selector(selector, timeout=60000)
             imgs = page.locator(selector)
@@ -88,9 +90,10 @@ def generate_image_and_caption():
             print(f"[DEBUG] LIVE MODE: Image downloaded to {dst}")
 
             # Get caption via chat
-            editor.click()
-            editor.fill("Write a short poetic mysterious caption for that image.")
+            editor.click(force=True)
+            editor.fill("Write a short poetic mysterious caption for that image.", force=True)
             editor.press("Enter")
+            print("[DEBUG] Waiting for caption")
             page.wait_for_timeout(7000)
             texts = page.locator("div").all_text_contents()
             caption = next((t.strip() for t in reversed(texts) if 10 < len(t.strip()) < 300), None)
@@ -102,6 +105,7 @@ def generate_image_and_caption():
             try:
                 print("[DEBUG] FALLBACK MODE: Navigate to history")
                 page.goto("https://gemini.google.com/app/history")
+                page.keyboard.press("Escape")
                 selector = "div.attachment-container.generated-images img.image"
                 page.wait_for_selector(selector, timeout=60000)
                 hist_imgs = page.locator(selector)
@@ -131,7 +135,7 @@ def generate_image_and_caption():
             browser.close()
 
         if not dst:
-            raise RuntimeError("❌ Failed to download image in both live and history modes")
+            raise RuntimeError("❌ Failed to download image in both modes")
         if not caption:
             caption = "A place you’ve seen in dreams."
         print(f"[DEBUG] Caption: {caption}")
