@@ -7,15 +7,17 @@ import random
 from playwright.sync_api import sync_playwright, TimeoutError
 
 # ─── CONFIG ────────────────────────────────────────────────────
-FB_PAGE_ID         = os.getenv("FB_PAGE_ID")
-GEMINI_STORAGE     = "cookies.json"    # Gemini session state file
-FB_STORAGE         = "fb_storage.json" # Facebook session state file
-POSTED_HASHES_FILE = "posted_hashes.json"
-PROMPTS_FILE       = "prompts.txt"
-IMAGE_DIR          = "generated"
-# ───────────────────────────────────────────────────────────────
+FB_PAGE_ID           = os.getenv("FB_PAGE_ID")
+GEMINI_STORAGE       = "cookies.json"
+FB_STORAGE           = "fb_storage.json"
+POSTED_HASHES_FILE   = "posted_hashes.json"
+PROMPTS_FILE         = "prompts.txt"
+IMAGE_DIR            = "generated"
+# top-level container you pasted
+GEMINI_CONTAINER_SEL = 'infinite-scroller[data-test-id="chat-history-container"]'
+# ────────────────────────────────────────────────────────────────
 
-# Ensure directories & state file exist
+# ensure directories & state file
 os.makedirs(IMAGE_DIR, exist_ok=True)
 if not os.path.exists(POSTED_HASHES_FILE):
     with open(POSTED_HASHES_FILE, "w") as f:
@@ -38,7 +40,7 @@ def random_prompt():
         lines = [l.strip() for l in open(PROMPTS_FILE) if l.strip()]
         if lines:
             choice = random.choice(lines)
-            print(f"[STEP] Prompt: {choice!r}")
+            print(f"[STEP] Prompt chosen: {choice!r}")
             return choice
     default = "a liminal dream hallway with red lights and fog"
     print(f"[STEP] Using default prompt: {default!r}")
@@ -47,70 +49,76 @@ def random_prompt():
 posted = load_posted_hashes()
 
 def generate_image_and_caption():
-    print("[STEP] Start generate_image_and_caption")
+    print("[STEP] Starting generate_image_and_caption")
     with sync_playwright() as p:
         print("[STEP] Launching browser")
         browser = p.chromium.launch(headless=True)
         print("[STEP] Creating Gemini context")
-        context = browser.new_context(storage_state=GEMINI_STORAGE)
-        page = context.new_page()
-
-        # Intercept image network response
-        image_data = {"url": None, "body": None}
-        def on_response(resp):
-            url = resp.url
-            if url.startswith("https://lh3.googleusercontent.com"):
-                try:
-                    print(f"[STEP] Intercepted image URL: {url}")
-                    image_data["body"] = resp.body()
-                    image_data["url"]  = url
-                except:
-                    pass
-        page.on("response", on_response)
+        ctx = browser.new_context(storage_state=GEMINI_STORAGE)
+        page = ctx.new_page()
 
         print("[STEP] Navigating to Gemini")
         page.goto("https://gemini.google.com/app", timeout=120000)
 
-        print("[STEP] Waiting for editor")
+        print("[STEP] Waiting for prompt editor")
         try:
             editor = page.wait_for_selector(
-                "div.ql-editor[contenteditable='true'],"
-                "div[aria-label='Enter a prompt here'],"
-                "rich-textarea .ql-editor",
+                "div.ql-editor[contenteditable='true'], "
+                "div[aria-label='Enter a prompt here']",
                 timeout=120000
             )
         except TimeoutError:
             raise RuntimeError("Prompt editor never appeared")
 
         prompt = random_prompt()
-        print(f"[STEP] Sending prompt")
+        print(f"[STEP] Sending prompt: {prompt!r}")
         editor.click(force=True)
         editor.fill(prompt, force=True)
         editor.press("Enter")
 
-        print("[STEP] Waiting for image bytes")
-        page.wait_for_timeout(8000)
-        if not image_data["body"]:
-            raise RuntimeError("No image intercepted")
+        # wait for the response block to show up
+        print("[STEP] Waiting for top-level container")
+        page.wait_for_selector(GEMINI_CONTAINER_SEL, timeout=120000)
 
-        url = image_data["url"]
-        filename = os.path.basename(url.split("?",1)[0]) + ".png"
+        # now grab the <img> inside that container via JS
+        print("[STEP] Extracting image src from container")
+        src = page.evaluate(f'''
+            () => {{
+                const c = document.querySelector("{GEMINI_CONTAINER_SEL}");
+                if (!c) return null;
+                const imgs = Array.from(c.querySelectorAll("img"));
+                // pick the first googleusercontent.com image
+                const good = imgs.find(i=> i.src && i.src.includes("googleusercontent.com"));
+                return good ? good.src : null;
+            }}
+        ''')
+        if not src:
+            raise RuntimeError("Couldn’t find any image src in container")
+
+        print(f"[STEP] Image URL found: {src}")
+        # download with authenticated context
+        resp = ctx.request.get(src)
+        resp.raise_for_status()
+        data = resp.body()
+
+        filename = os.path.basename(src.split("?",1)[0]) + ".png"
         dst = os.path.join(IMAGE_DIR, filename)
         print(f"[STEP] Saving image to {dst}")
         with open(dst, "wb") as f:
-            f.write(image_data["body"])
+            f.write(data)
 
-        print("[STEP] Asking for caption")
+        # now ask Gemini for a caption
+        print("[STEP] Prompting for caption")
         editor.click(force=True)
         editor.fill("Write a short poetic mysterious caption for that image.", force=True)
         editor.press("Enter")
         page.wait_for_timeout(7000)
 
-        print("[STEP] Extracting caption")
+        print("[STEP] Extracting caption text")
         texts = page.locator("div").all_text_contents()
         caption = next(
             (t.strip() for t in reversed(texts)
-             if t.strip() and t.strip()!=prompt and 10< len(t.strip())<300),
+             if t.strip() and t.strip() != prompt and 10 < len(t.strip()) < 300),
             None
         ) or "A place you’ve seen in dreams."
         print(f"[STEP] Caption: {caption!r}")
@@ -120,9 +128,9 @@ def generate_image_and_caption():
         return dst, caption
 
 def post_to_facebook_via_ui(image_path, caption):
-    print("[STEP] Start post_to_facebook_via_ui")
+    print("[STEP] Starting Facebook post via UI")
     with sync_playwright() as p:
-        print("[STEP] Launching browser for Facebook")
+        print("[STEP] Launching Facebook browser")
         browser = p.chromium.launch(headless=True)
         ctx     = browser.new_context(storage_state=FB_STORAGE)
         page    = ctx.new_page()
@@ -130,12 +138,12 @@ def post_to_facebook_via_ui(image_path, caption):
         print(f"[STEP] Navigating to Facebook Page {FB_PAGE_ID}")
         page.goto(f"https://www.facebook.com/{FB_PAGE_ID}", timeout=60000)
 
-        print("[STEP] Waiting for 'Create a post'")
+        print("[STEP] Opening post composer")
         page.wait_for_selector("div[aria-label='Create a post']", timeout=60000)
         page.click("div[aria-label='Create a post']", force=True)
 
         print("[STEP] Uploading image")
-        page.wait_for_selector("input[type=file]", timeout=30000)
+        page.wait_for_selector("input[type=file']", timeout=30000)
         page.set_input_files("input[type=file']", image_path)
 
         print("[STEP] Filling caption")
@@ -152,39 +160,39 @@ def post_to_facebook_via_ui(image_path, caption):
 def run_once():
     print("[STEP] run_once start")
     try:
-        img_path, caption = generate_image_and_caption()
+        img, caption = generate_image_and_caption()
     except Exception as e:
-        print(f"[ERROR] generate fail: {e}")
+        print(f"[ERROR] Image generation failed: {e}")
         return
 
-    h = hashlib.sha256(open(img_path,"rb").read()).hexdigest()
+    h = hashlib.sha256(open(img, "rb").read()).hexdigest()
     print(f"[STEP] Image hash: {h}")
     if h in posted:
-        print("[STEP] Duplicate, skipping")
-        os.remove(img_path)
+        print("[STEP] Duplicate detected, skipping")
+        os.remove(img)
         return
 
     try:
-        post_to_facebook_via_ui(img_path, caption)
+        post_to_facebook_via_ui(img, caption)
     except Exception as e:
-        print(f"[ERROR] post fail: {e}")
-        os.remove(img_path)
+        print(f"[ERROR] Facebook post failed: {e}")
+        os.remove(img)
         return
 
     posted.add(h)
     save_posted_hashes(posted)
-    os.remove(img_path)
-    print("[STEP] run_once complete")
+    os.remove(img)
+    print("[STEP] run_once complete: posted & cleaned up")
 
 def schedule_posts():
-    print("[STEP] Scheduling posts")
+    print("[STEP] Scheduling daily posts")
     hours = sorted(random.sample(range(24), random.randint(1,4)))
     for h in hours:
         schedule.every().day.at(f"{h:02}:00").do(run_once)
     print(f"[STEP] Scheduled at hours: {hours}")
 
-if __name__=="__main__":
-    run_once()
+if __name__ == "__main__":
+    run_once()       # test immediately
     schedule_posts()
     while True:
         schedule.run_pending()
