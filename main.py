@@ -1,16 +1,22 @@
 import os
+import sys
 import random
 import requests
 import time
 from datetime import datetime, timedelta
 
+# === DEBUG: Check DeepAI key presence ===
+DEEPAI_API_KEY = os.getenv("DEEPAI_API_KEY", "")
+print(f"[🧪] DEEPAI_API_KEY present? {bool(DEEPAI_API_KEY)} (length={len(DEEPAI_API_KEY)})", file=sys.stderr)
+if not DEEPAI_API_KEY:
+    raise RuntimeError("❌ DEEPAI_API_KEY is missing or empty! Check your Railway Variables.")
+
 # === ENV VARS ===
-PAGE_ID           = os.getenv("FB_PAGE_ID")
-PAGE_TOKEN        = os.getenv("FB_PAGE_ACCESS_TOKEN")
-DEEPAI_API_KEY    = os.getenv("DEEPAI_API_KEY")
-IMAGES_DIR        = "images"
-CAPTIONS_FILE     = "captions.txt"
-POST_FLAG         = ".posted"
+PAGE_ID        = os.getenv("FB_PAGE_ID")
+PAGE_TOKEN     = os.getenv("FB_PAGE_ACCESS_TOKEN")
+IMAGES_DIR     = "images"
+CAPTIONS_FILE  = "captions.txt"
+POST_FLAG      = ".posted"
 
 # === Hashtag pool ===
 HASHTAGS = [
@@ -21,7 +27,7 @@ HASHTAGS = [
 # === 1) Clean up images older than 3 hours ===
 def clean_old_images():
     now    = time.time()
-    cutoff = now - 3 * 3600
+    cutoff = now - 3 * 3600  # 3 hours
     for fname in os.listdir(IMAGES_DIR):
         path = os.path.join(IMAGES_DIR, fname)
         if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
@@ -45,12 +51,14 @@ def generate_image():
         data={"text": prompt},
         headers={"api-key": DEEPAI_API_KEY}
     )
+    if resp.status_code == 401:
+        raise RuntimeError("❌ DeepAI returned 401 Unauthorized: your DEEPAI_API_KEY is likely invalid.")
     resp.raise_for_status()
+
     img_url = resp.json().get("output_url")
     if not img_url:
         raise RuntimeError(f"DeepAI error: {resp.text}")
 
-    # download image
     img_data = requests.get(img_url).content
     fname    = f"{int(time.time())}.png"
     path     = os.path.join(IMAGES_DIR, fname)
