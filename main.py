@@ -2,22 +2,21 @@ import os
 import random
 import requests
 import time
-import urllib.request
 from datetime import datetime, timedelta
 from gpt4all import GPT4All
 
-# === ENV VARS (Railway) ===
+GDRIVE_FILE_ID = os.getenv("GDRIVE_FILE_ID")
 PAGE_ID = os.getenv("FB_PAGE_ID")
-PAGE_TOKEN = os.getenv("FB_PAGE_TOKEN")
+PAGE_TOKEN = os.getenv("FB_PAGE_ACCESS_TOKEN")
 CAPTIONS_MODEL = "ggml-gpt4all-j.bin"
-MODEL_URL = "https://gpt4all.io/models/ggml-gpt4all-j.bin"
 IMAGES_DIR = "images"
+POST_FLAG = ".posted"
 
-# === Ensure GPT4All model file exists ===
+# === Download GPT4All model from Google Drive ===
 def ensure_model_exists():
     if not os.path.exists(CAPTIONS_MODEL):
-        print("[+] Downloading GPT4All model (may take a few minutes)...")
-        urllib.request.urlretrieve(MODEL_URL, CAPTIONS_MODEL)
+        print("[+] Downloading GPT4All model from Google Drive...")
+        os.system(f"gdown --id {GDRIVE_FILE_ID} -O {CAPTIONS_MODEL}")
         print("[+] Download complete.")
 
 # === Generate caption using GPT4All ===
@@ -56,11 +55,19 @@ def post_to_facebook(image_path, caption):
     else:
         print("[❌] Post failed:", response.text)
 
-# === Main one-time post ===
+# === One-time post ===
 def run_once():
     caption = generate_caption()
     image = get_random_image()
     post_to_facebook(image, caption)
+
+# === Prevent auto-repost on Railway redeploy ===
+def already_posted():
+    return os.path.exists(POST_FLAG)
+
+def mark_posted():
+    with open(POST_FLAG, "w") as f:
+        f.write("posted")
 
 # === Schedule future posts randomly ===
 def schedule_posts():
@@ -74,9 +81,15 @@ def schedule_posts():
         time.sleep((post_time - datetime.now()).total_seconds())
         run_once()
 
-# === First post and daily loop ===
+# === Main loop ===
 if __name__ == "__main__":
     ensure_image_folder()
-    run_once()
+
+    if not already_posted():
+        run_once()
+        mark_posted()
+    else:
+        print("[🛑] Initial post already made — skipping first-run duplicate.")
+
     while True:
         schedule_posts()
