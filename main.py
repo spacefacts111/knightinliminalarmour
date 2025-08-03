@@ -2,6 +2,7 @@ import os
 import random
 import requests
 import time
+import urllib.request
 from datetime import datetime, timedelta
 from gpt4all import GPT4All
 
@@ -9,13 +10,15 @@ from gpt4all import GPT4All
 PAGE_ID = os.getenv("FB_PAGE_ID")
 PAGE_TOKEN = os.getenv("FB_PAGE_TOKEN")
 CAPTIONS_MODEL = "ggml-gpt4all-j.bin"
+MODEL_URL = "https://gpt4all.io/models/ggml-gpt4all-j.bin"
 IMAGES_DIR = "images"
 
 # === Ensure GPT4All model file exists ===
 def ensure_model_exists():
     if not os.path.exists(CAPTIONS_MODEL):
-        print("[+] Downloading GPT4All model...")
-        os.system(f"wget https://gpt4all.io/models/{CAPTIONS_MODEL} -O {CAPTIONS_MODEL}")
+        print("[+] Downloading GPT4All model (may take a few minutes)...")
+        urllib.request.urlretrieve(MODEL_URL, CAPTIONS_MODEL)
+        print("[+] Download complete.")
 
 # === Generate caption using GPT4All ===
 def generate_caption():
@@ -30,7 +33,7 @@ def generate_caption():
 def ensure_image_folder():
     if not os.path.exists(IMAGES_DIR):
         os.makedirs(IMAGES_DIR)
-        print(f"[⚠️] Created empty /{IMAGES_DIR} folder. Please add some images before next run.")
+        print(f"[⚠️] Created empty /{IMAGES_DIR}/ folder. Please add some images before the next post.")
 
 # === Pick random image from /images/ folder ===
 def get_random_image():
