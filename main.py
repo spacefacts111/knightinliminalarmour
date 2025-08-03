@@ -45,12 +45,9 @@ def generate_image_and_caption():
         browser = p.chromium.launch(headless=True)
         context = browser.new_context()
 
-        # Load cookies
-        if os.getenv("GEMINI_COOKIES_JSON"):
-            cookies = json.loads(os.getenv("GEMINI_COOKIES_JSON"))
-        else:
-            with open(COOKIES_PATH, "r") as f:
-                cookies = json.load(f)
+        # Load cookies from local file
+        with open(COOKIES_PATH, "r") as f:
+            cookies = json.load(f)
         context.add_cookies(cookies)
 
         page = context.new_page()
