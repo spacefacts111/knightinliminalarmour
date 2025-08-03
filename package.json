@@ -1,0 +1,5 @@
+{
+  "scripts": {
+    "postinstall": "playwright install --with-deps"
+  }
+}
