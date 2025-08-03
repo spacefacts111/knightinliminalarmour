@@ -1,3 +1,2 @@
-huggingface_hub
+gpt4all
 requests
-Pillow
