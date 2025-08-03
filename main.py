@@ -43,23 +43,28 @@ def generate_image_and_caption():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
 
-        # Gemini context with your saved session
+        # Gemini context with saved session
         gem_context = browser.new_context(storage_state=GEMINI_STORAGE)
         gem_page = gem_context.new_page()
-        gem_page.goto("https://gemini.google.com/app")
+        gem_page.goto("https://gemini.google.com/app", timeout=120000)
         gem_page.keyboard.press("Escape")
 
-        # === Updated selector ===
-        # Wait for the actual prompt box by its aria-label
-        gem_page.wait_for_selector("div[aria-label='Enter a prompt here']", timeout=120000)
-        editor = gem_page.locator("div[aria-label='Enter a prompt here']")
+        # Debug: log the URL and first 500 chars of HTML if the selector fails
+        gem_page.on("console", lambda msg: print(f"[PAGE LOG] {msg.text}"))
+        print("[DEBUG] Page URL:", gem_page.url)
+
+        # ==== Updated selector for prompt editor ====
+        # Wait for the QL editor div identified by its data-placeholder attribute
+        gem_page.wait_for_selector('div.ql-editor[data-placeholder="Ask Gemini"]', timeout=120000)
+        editor = gem_page.locator('div.ql-editor[data-placeholder="Ask Gemini"]')
+
         prompt = random_prompt()
         print(f"[DEBUG] Prompt: {prompt}")
         editor.click(force=True)
         editor.fill(prompt, force=True)
         editor.press("Enter")
 
-        # Wait for the generated image element
+        # Wait for the generated image
         selector = "div.attachment-container.generated-images img.image"
         gem_page.wait_for_selector(selector, timeout=120000)
         img_elem = gem_page.locator(selector).nth(-1)
@@ -74,7 +79,7 @@ def generate_image_and_caption():
             f.write(data)
         print(f"[DEBUG] Image saved to {dst}")
 
-        # Caption
+        # Ask for caption
         editor.click(force=True)
         editor.fill("Write a short poetic mysterious caption for that image.", force=True)
         editor.press("Enter")
