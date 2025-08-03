@@ -19,11 +19,11 @@ def ensure_model_exists():
         os.system(f"gdown --id {GDRIVE_FILE_ID} -O {CAPTIONS_MODEL}")
         print("[+] Download complete.")
 
-# === Generate caption using GPT4All ===
+# === Generate caption using GPT4All (local .bin only) ===
 def generate_caption():
     ensure_model_exists()
     prompt = "Write a one-sentence mysterious, dark, poetic, relatable thought."
-    model = GPT4All(CAPTIONS_MODEL)
+    model = GPT4All(model_path=CAPTIONS_MODEL, model_name="gpt4all-j", allow_download=False)
     with model.chat_session():
         output = model.generate(prompt, max_tokens=50)
         return output.strip()
