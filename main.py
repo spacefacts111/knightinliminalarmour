@@ -6,15 +6,14 @@ import schedule
 import hashlib
 from playwright.sync_api import sync_playwright
 
-# ─── CONFIG ────────────────────────────────────────────────────
+# Environment variables
 FB_PAGE_ID         = os.getenv("FB_PAGE_ID")
-GEMINI_STORAGE     = "cookies.json"      # your Gemini session state
-FB_STORAGE         = "fb_storage.json"   # your Facebook session state
+GEMINI_STORAGE     = "cookies.json"    # your Gemini session (cookies + storage)
+FB_STORAGE         = "fb_storage.json" # your Facebook session (cookies + storage)
 POSTED_HASHES_FILE = "posted_hashes.json"
 IMAGE_DIR          = "generated"
-# ───────────────────────────────────────────────────────────────
 
-# ensure directories and files exist
+# Ensure directories and state file exist
 os.makedirs(IMAGE_DIR, exist_ok=True)
 if not os.path.exists(POSTED_HASHES_FILE):
     with open(POSTED_HASHES_FILE, "w") as f:
@@ -35,36 +34,34 @@ def fetch_latest_image_from_history():
         ctx     = browser.new_context(storage_state=GEMINI_STORAGE)
         page    = ctx.new_page()
         page.goto("https://gemini.google.com/app/history", timeout=60000)
+        page.wait_for_selector("div.attachment-container.generated-images", timeout=60000)
 
-        # Corrected selector: look for Googleusercontent images
-        selector = "img[src^='https://lh3.googleusercontent.com']"
-        print("[DEBUG] Waiting for history images by src pattern...")
-        page.wait_for_selector(selector, timeout=60000)
-        imgs = page.locator(selector)
-        count = imgs.count()
-        print(f"[DEBUG] Found {count} history images")
-        if count == 0:
+        # Extract all image URLs under the history panel
+        srcs = page.evaluate("""
+            () => {
+                const panel = document.querySelector('div.attachment-container.generated-images');
+                if (!panel) return [];
+                return Array.from(panel.querySelectorAll('img'))
+                    .map(img => img.src)
+                    .filter(src => typeof src === 'string' && src.startsWith('https://'));
+            }
+        """)
+        if not srcs:
             raise RuntimeError("No images found in Gemini history")
+        latest = srcs[0]
 
-        # Take the most recent (first) one
-        img = imgs.nth(0)
-        src = img.get_attribute("src")
-        if not src:
-            raise RuntimeError("Could not extract image URL")
-
-        # Download via authenticated request
-        resp = ctx.request.get(src)
+        # Download via authenticated Playwright request
+        resp = ctx.request.get(latest)
         resp.raise_for_status()
-        fname = os.path.basename(src.split("?",1)[0]) + ".png"
-        dst   = os.path.join(IMAGE_DIR, fname)
-        with open(dst, "wb") as f:
+        filename = os.path.basename(latest.split("?",1)[0]) + ".png"
+        path = os.path.join(IMAGE_DIR, filename)
+        with open(path, "wb") as f:
             f.write(resp.body())
 
         browser.close()
-        print(f"[DEBUG] Downloaded history image to {dst}")
-        return dst, src
+        return path, latest
 
-def generate_caption_for_image(src_url):
+def generate_caption(src_url):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         ctx     = browser.new_context(storage_state=GEMINI_STORAGE)
@@ -72,22 +69,16 @@ def generate_caption_for_image(src_url):
         page.goto("https://gemini.google.com/app", timeout=60000)
         page.keyboard.press("Escape")
 
-        # Wait for the chat editor
         editor = page.wait_for_selector("div.ql-editor[contenteditable='true']", timeout=60000)
         prompt = f"Write a short poetic mysterious caption for the image at {src_url}"
-        print(f"[DEBUG] Caption prompt: {prompt}")
         editor.click(force=True)
         editor.fill(prompt, force=True)
         editor.press("Enter")
 
         page.wait_for_timeout(7000)
         texts = page.locator("div").all_text_contents()
-        # find a reply that isn't our prompt
-        caption = next(
-            (t.strip() for t in texts
-             if t.strip() != prompt and 10 < len(t.strip()) < 300),
-            None
-        )
+        caption = next((t.strip() for t in texts
+                        if t.strip() != prompt and 10 < len(t.strip()) < 300), None)
         browser.close()
         return caption or "A place you’ve seen in dreams."
 
@@ -98,17 +89,15 @@ def post_to_facebook_via_ui(image_path, caption):
         page    = ctx.new_page()
         page.goto(f"https://www.facebook.com/{FB_PAGE_ID}", timeout=60000)
 
-        # Open the composer
         page.wait_for_selector("div[aria-label='Create a post']", timeout=60000)
         page.click("div[aria-label='Create a post']", force=True)
 
-        # Upload image and add caption
-        page.wait_for_selector("input[type=file]", timeout=30000)
+        page.wait_for_selector("input[type=file']", timeout=30000)
         page.set_input_files("input[type=file']", image_path)
+
         page.wait_for_selector("div[aria-label='Write a post']", timeout=30000)
         page.fill("div[aria-label='Write a post']", caption)
 
-        # Submit post
         page.click("div[aria-label='Post']", force=True)
         page.wait_for_timeout(5000)
         browser.close()
@@ -126,7 +115,7 @@ def run_once():
         os.remove(img_path)
         return
 
-    caption = generate_caption_for_image(src_url)
+    caption = generate_caption(src_url)
     print(f"[INFO] Posting to Facebook with caption: {caption}")
     try:
         post_to_facebook_via_ui(img_path, caption)
@@ -147,7 +136,7 @@ def schedule_posts():
     print(f"[INFO] Scheduled at hours: {hours}")
 
 if __name__ == "__main__":
-    run_once()        # run immediately
+    run_once()
     schedule_posts()
     while True:
         schedule.run_pending()
