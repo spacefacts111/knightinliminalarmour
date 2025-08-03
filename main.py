@@ -1,105 +1,64 @@
 import os
 import random
-import requests
 import time
+import requests
 from datetime import datetime, timedelta
-import torch
-from diffusers import StableDiffusionPipeline
 from gpt4all import GPT4All
 
-# ─── Railway env vars ─────────────────────────────────────────────────────────────
-FB_APP_ID     = os.getenv("FB_APP_ID")
-FB_APP_SECRET = os.getenv("FB_APP_SECRET")
-FB_USER_TOKEN = os.getenv("FB_USER_TOKEN")
-FB_PAGE_ID    = os.getenv("FB_PAGE_ID")
+# CONFIG
+PAGE_ID = os.getenv("FB_PAGE_ID")
+PAGE_ACCESS_TOKEN = os.getenv("FB_PAGE_ACCESS_TOKEN")
+CAPTIONS_MODEL = "ggml-gpt4all-j.bin"
 
-# ─── Liminal prompts ──────────────────────────────────────────────────────────────
-PROMPTS = [
-    "a liminal space, abandoned hallway, dreamlike, eerie atmosphere, vaporwave colors, no people",
-    "empty school at night, fluorescent lights, surreal, analog horror, dark shadows, no humans",
-    "dreamy hotel corridor with glowing orange lights, mysterious and peaceful, empty and endless",
-    "liminal landscape, empty parking lot at sunset, nostalgic and surreal, atmospheric",
-    "dark forest clearing, foggy, mystical light, no people, cinematic shadows"
-]
+# Setup: Download model if needed
+if not os.path.exists(CAPTIONS_MODEL):
+    import urllib.request
+    print("Downloading GPT4All model...")
+    url = "https://gpt4all.io/models/ggml-gpt4all-j.bin"
+    urllib.request.urlretrieve(url, CAPTIONS_MODEL)
 
-# ─── Generate image ───────────────────────────────────────────────────────────────
-def generate_image():
-    pipe = StableDiffusionPipeline.from_pretrained(
-        "runwayml/stable-diffusion-v1-5",
-        torch_dtype=torch.float16,
-        revision="fp16"
-    ).to("cuda" if torch.cuda.is_available() else "cpu")
-    prompt = random.choice(PROMPTS)
-    img = pipe(prompt, guidance_scale=7.5).images[0]
-    fname = f"liminal_{datetime.now():%Y%m%d%H%M%S}.png"
-    img.save(fname)
-    return fname
-
-# ─── Generate caption ─────────────────────────────────────────────────────────────
+# Caption generation
 def generate_caption():
-    model = GPT4All("ggml-gpt4all-j.bin")
-    text = model.generate(
-        "Write a mysterious, philosophical, relatable caption for a liminal space photo:",
-        max_tokens=50
-    )
-    return text.strip()
+    prompt = "Write a mysterious, dark, poetic caption that fits a surreal liminal space photo on Facebook. Avoid hashtags."
+    model = GPT4All(CAPTIONS_MODEL)
+    with model.chat_session():
+        return model.generate(prompt, max_tokens=60).strip()
 
-# ─── Refresh & fetch Page token ──────────────────────────────────────────────────
-def get_page_access_token():
-    # short-lived → long-lived user token
-    r = requests.get(
-        "https://graph.facebook.com/v18.0/oauth/access_token",
-        params={
-            "grant_type": "fb_exchange_token",
-            "client_id": FB_APP_ID,
-            "client_secret": FB_APP_SECRET,
-            "fb_exchange_token": FB_USER_TOKEN
-        }
-    ).json()
-    user_token = r["access_token"]
-    # fetch page token
-    pages = requests.get(
-        "https://graph.facebook.com/v18.0/me/accounts",
-        params={"access_token": user_token}
-    ).json()["data"]
-    for p in pages:
-        if p["id"] == FB_PAGE_ID:
-            return p["access_token"]
-    raise RuntimeError("Page token not found")
+# Dummy image (Replace with real image gen later)
+def generate_image():
+    from PIL import Image
+    img_path = "liminal_image.jpg"
+    img = Image.new("RGB", (1024, 1024), (random.randint(20, 40), random.randint(20, 40), random.randint(20, 40)))
+    img.save(img_path)
+    return img_path
 
-# ─── Post image to Facebook Page ─────────────────────────────────────────────────
-def post_image(token, img_path, caption):
-    files = {"source": open(img_path, "rb")}
-    data  = {"caption": caption, "access_token": token}
-    resp  = requests.post(f"https://graph.facebook.com/{FB_PAGE_ID}/photos", files=files, data=data)
-    return resp.ok
+# Post to Facebook
+def post_to_facebook(image_path, caption):
+    url = f"https://graph.facebook.com/v18.0/{PAGE_ID}/photos"
+    files = {"source": open(image_path, "rb")}
+    data = {
+        "access_token": PAGE_ACCESS_TOKEN,
+        "message": caption
+    }
+    response = requests.post(url, files=files, data=data)
+    print("✅ POSTED:", response.json())
 
-# ─── Schedule logic ───────────────────────────────────────────────────────────────
-def get_schedule():
-    first = not os.path.exists("._ran_once")
-    if first:
-        open("._ran_once", "w").close()
-        # immediate test post
-        return [datetime.now()]
-    # pick 1–4 random times over next 24h
-    times = []
-    now = datetime.now()
-    for _ in range(random.randint(1, 4)):
-        offset = timedelta(seconds=random.randint(0, 86400))
-        times.append(now + offset)
-    return sorted(times)
+# MAIN BOT LOOP
+def run_bot():
+    print("🤖 Starting Facebook Liminal Bot")
+    caption = generate_caption()
+    image = generate_image()
+    post_to_facebook(image, caption)
 
-# ─── Main loop ───────────────────────────────────────────────────────────────────
-def run():
-    token = get_page_access_token()
-    for post_time in get_schedule():
-        wait = (post_time - datetime.now()).total_seconds()
-        if wait > 0:
-            time.sleep(wait)
-        img     = generate_image()
+    print("⏳ Now scheduling 1–4 posts every 24h randomly.")
+    while True:
+        wait = random.randint(4, 16) * 3600  # wait 4 to 16 hours
+        print(f"🕒 Waiting {wait//3600}h before next post...")
+        time.sleep(wait)
+
         caption = generate_caption()
-        ok      = post_image(token, img, caption)
-        print(f"[{datetime.now()}] Posted: {ok}")
+        image = generate_image()
+        post_to_facebook(image, caption)
 
 if __name__ == "__main__":
-    run()
+    run_bot()
