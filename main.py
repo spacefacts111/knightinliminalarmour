@@ -102,8 +102,10 @@ def post_to_facebook_with_cookies(img_url, caption):
 
         try:
             log("Waiting for 'Photo/video' button...")
-            page.wait_for_selector("span.x1lliihq:has-text('Photo/video')", timeout=15000)
-            page.locator("span.x1lliihq:has-text('Photo/video')").click()
+            # ✅ New Gemini-style working selector
+            photo_btn = page.locator("div[role='button']:has(span:text('Photo/video'))")
+            photo_btn.wait_for(timeout=10000)
+            photo_btn.click()
             log("✅ Clicked 'Photo/video'")
         except:
             page.screenshot(path="fb_fail_photo_button.png")
