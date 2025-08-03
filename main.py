@@ -60,29 +60,43 @@ def generate_image_and_caption(prompt="liminal space aesthetic, no people"):
             raise Exception("Prompt box not found.")
 
         try:
-            log("Waiting for image to generate...")
-            page.wait_for_selector("img", timeout=120000)
-            all_imgs = page.query_selector_all("img")
+            # 🧠 Smart retry loop for proper Gemini image
+            max_attempts = 3
+            for attempt in range(max_attempts):
+                log(f"Waiting for real image (attempt {attempt + 1})...")
+                page.wait_for_selector("img", timeout=30000)
+                all_imgs = page.query_selector_all("img")
 
-            valid_imgs = [
-                img.get_attribute("src")
-                for img in all_imgs
-                if img.get_attribute("src") and "googleusercontent" in img.get_attribute("src")
-            ]
+                valid_imgs = []
+                for img in all_imgs:
+                    src = img.get_attribute("src")
+                    if src and "googleusercontent" in src:
+                        try:
+                            box = img.bounding_box()
+                            if box and box["width"] > 300:
+                                valid_imgs.append(src)
+                        except:
+                            continue
 
-            if not valid_imgs:
-                raise Exception("Image appeared, but none had a usable src.")
+                if valid_imgs:
+                    img_url = valid_imgs[0]
+                    break
+                else:
+                    log("No usable image found yet.")
+                    page.wait_for_timeout(5000)
+            else:
+                raise Exception("❌ No valid image found after 3 tries.")
 
-            img_url = valid_imgs[0]
             log(f"Image URL retrieved: {img_url}")
 
-            # Force Gemini caption load
+            # ✅ Caption required from Gemini
             caption_elem = page.locator("div.model-response-text").first
             caption_elem.wait_for(timeout=10000)
             caption = caption_elem.inner_text().strip()
 
             if not caption:
                 raise Exception("❌ Gemini generated no caption.")
+
             log(f"Caption retrieved: {caption}")
 
         except PlaywrightTimeout:
@@ -112,7 +126,6 @@ def post_to_facebook_with_cookies(img_url, caption):
 
         try:
             log("Clicking 'Photo/video' button...")
-            # ✅ Corrected button logic
             page.locator("span:has-text('Photo/video')").click()
         except:
             raise Exception("Couldn't find 'Photo/video' button. Facebook layout may have changed.")
