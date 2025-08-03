@@ -13,10 +13,10 @@ FB_STORAGE           = "fb_storage.json"
 POSTED_HASHES_FILE   = "posted_hashes.json"
 PROMPTS_FILE         = "prompts.txt"
 IMAGE_DIR            = "generated"
-# your top-level container:
+# top-level container for Gemini history/images
 GEMINI_CONTAINER_SEL = 'infinite-scroller[data-test-id="chat-history-container"]'
-# the prompt editor:
-GEMINI_EDITOR_SEL    = 'rich-textarea .ql-editor'
+# generic editor selector for the contenteditable div
+GEMINI_EDITOR_SEL    = 'div.ql-editor[contenteditable="true"]'
 # ────────────────────────────────────────────────────────────────
 
 # ensure directories & state file
@@ -76,7 +76,7 @@ def generate_image_and_caption():
         print("[STEP] Waiting for container to render images")
         page.wait_for_selector(GEMINI_CONTAINER_SEL, timeout=120000)
 
-        print("[STEP] Dumping container HTML for debug:")
+        print("[STEP] Dumping container HTML for debug")
         html_snippet = page.evaluate(f'''
             () => document.querySelector("{GEMINI_CONTAINER_SEL}")?.innerHTML
         ''') or ""
