@@ -4,45 +4,31 @@ import requests
 import time
 from datetime import datetime, timedelta
 
-# ---- AI image generation ----
-from diffusers import StableDiffusionPipeline
-import torch
-
 # === ENV VARS ===
-PAGE_ID        = os.getenv("FB_PAGE_ID")
-PAGE_TOKEN     = os.getenv("FB_PAGE_ACCESS_TOKEN")
-IMAGES_DIR     = "images"
-CAPTIONS_FILE  = "captions.txt"
-POST_FLAG      = ".posted"
+PAGE_ID           = os.getenv("FB_PAGE_ID")
+PAGE_TOKEN        = os.getenv("FB_PAGE_ACCESS_TOKEN")
+DEEPAI_API_KEY    = os.getenv("DEEPAI_API_KEY")
+IMAGES_DIR        = "images"
+CAPTIONS_FILE     = "captions.txt"
+POST_FLAG         = ".posted"
 
-# ---- Hashtag pool ----
+# === Hashtag pool ===
 HASHTAGS = [
     "liminalspaces","moody","ethereal","dreamscape","nopeople",
     "hdr","cinematic","haunting","emptyworlds","surreal"
 ]
 
-# === Stable Diffusion pipeline singleton ===
-_pipe = None
-def get_sd_pipe():
-    global _pipe
-    if _pipe is None:
-        model_id = "runwayml/stable-diffusion-v1-5"
-        device   = "cuda" if torch.cuda.is_available() else "cpu"
-        _pipe = StableDiffusionPipeline.from_pretrained(model_id)
-        _pipe = _pipe.to(device)
-    return _pipe
-
 # === 1) Clean up images older than 3 hours ===
 def clean_old_images():
-    now = time.time()
-    cutoff = now - 3 * 3600  # 3 hours ago
+    now    = time.time()
+    cutoff = now - 3 * 3600
     for fname in os.listdir(IMAGES_DIR):
         path = os.path.join(IMAGES_DIR, fname)
         if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
             os.remove(path)
             print(f"[🗑️] Deleted old image: {path}")
 
-# === 2) Generate a new liminal space image ===
+# === 2) Generate a new liminal space image via DeepAI ===
 def generate_image():
     os.makedirs(IMAGES_DIR, exist_ok=True)
     clean_old_images()
@@ -53,13 +39,24 @@ def generate_image():
     else:
         prompt = "A bright, abandoned hallway with soft morning light, ethereal liminal space, high detail"
 
-    pipe = get_sd_pipe()
-    img  = pipe(prompt).images[0]
+    print(f"[+] Generating image ({style}) via DeepAI…")
+    resp = requests.post(
+        "https://api.deepai.org/api/text2img",
+        data={"text": prompt},
+        headers={"api-key": DEEPAI_API_KEY}
+    )
+    resp.raise_for_status()
+    img_url = resp.json().get("output_url")
+    if not img_url:
+        raise RuntimeError(f"DeepAI error: {resp.text}")
 
-    fname = f"{int(time.time())}.png"
-    path  = os.path.join(IMAGES_DIR, fname)
-    img.save(path)
-    print(f"[+] Generated image ({style}): {path}")
+    # download image
+    img_data = requests.get(img_url).content
+    fname    = f"{int(time.time())}.png"
+    path     = os.path.join(IMAGES_DIR, fname)
+    with open(path, "wb") as f:
+        f.write(img_data)
+    print(f"[✅] Image saved: {path}")
     return path
 
 # === 3) Pick a caption from file or fallback ===
@@ -76,7 +73,7 @@ def generate_hashtags(n=5):
 # === 5) Post to Facebook ===
 def post_to_facebook(image_path, caption, hashtags):
     text = f"{caption}\n\n{hashtags}"
-    print(f"[+] Posting image: {image_path}\n    Caption: {caption}\n    Tags: {hashtags}")
+    print(f"[+] Posting {image_path}\n    Caption: {caption}\n    Tags: {hashtags}")
     with open(image_path, "rb") as img:
         files = {"source": img}
         data  = {"caption": text, "access_token": PAGE_TOKEN}
@@ -92,14 +89,15 @@ def already_posted():
     return os.path.exists(POST_FLAG)
 
 def mark_posted():
-    open(POST_FLAG, "w").write("posted")
+    with open(POST_FLAG, "w") as f:
+        f.write("posted")
 
 # === 7) Single post cycle ===
 def run_once():
-    img  = generate_image()
-    cap  = generate_caption()
-    tags = generate_hashtags()
-    post_to_facebook(img, cap, tags)
+    img_path = generate_image()
+    cap      = generate_caption()
+    tags     = generate_hashtags()
+    post_to_facebook(img_path, cap, tags)
 
 # === 8) Scheduler ===
 def schedule_posts():
@@ -107,7 +105,7 @@ def schedule_posts():
     print(f"[+] Scheduling {count} posts today.")
     for _ in range(count):
         hours = random.randint(1,24)
-        print(f"    ⏰ Sleeping {hours}h until next post…")
+        print(f"    ⏰ Sleeping {hours}h…")
         time.sleep(hours * 3600)
         run_once()
 
