@@ -1,5 +1,1 @@
-accelerate
-diffusers
-torch
-transformers
 requests
