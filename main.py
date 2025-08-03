@@ -13,11 +13,11 @@ FB_STORAGE           = "fb_storage.json"
 POSTED_HASHES_FILE   = "posted_hashes.json"
 PROMPTS_FILE         = "prompts.txt"
 IMAGE_DIR            = "generated"
-# top‐level container & selectors
+# Gemini selectors
 GEMINI_CONTAINER_SEL = 'infinite-scroller[data-test-id="chat-history-container"]'
-GEMINI_EDITOR_SEL    = 'div.ql-editor[contenteditable="true"]'
+GEMINI_EDITOR_SEL    = 'div.ql-editor[aria-label="Enter a prompt here"]'
 GEMINI_IMAGE_SEL     = 'img.image.animate.loaded'
-GEMINI_DOWNLOAD_BTN  = 'download-generated-image-button button[data-test-id="download-generated-image-button"]'
+GEMINI_DOWNLOAD_BTN  = 'mat-icon[fonticon="download"]'
 # ────────────────────────────────────────────────────────────────
 
 os.makedirs(IMAGE_DIR, exist_ok=True)
@@ -52,33 +52,41 @@ def generate_image_and_caption():
         page    = ctx.new_page()
 
         page.goto("https://gemini.google.com/app", timeout=120000)
+
+        # ——— wait for the exact prompt box
+        print("[STEP] Waiting for Gemini prompt editor")
         try:
             editor = page.wait_for_selector(GEMINI_EDITOR_SEL, timeout=120000)
         except TimeoutError:
-            raise RuntimeError("Editor never appeared")
+            raise RuntimeError("Gemini editor never appeared")
 
         prompt = random_prompt()
-        print(f"[STEP] Prompting: {prompt!r}")
+        print(f"[STEP] Typing prompt: {prompt!r}")
         editor.click(force=True)
         editor.fill(prompt, force=True)
         editor.press("Enter")
 
+        # ——— wait for generated image & download it
         page.wait_for_selector(GEMINI_CONTAINER_SEL, timeout=120000)
         page.wait_for_selector(f"{GEMINI_CONTAINER_SEL} >> {GEMINI_IMAGE_SEL}", timeout=120000)
 
-        # click the download button and capture the download
-        print("[STEP] Downloading full-size image via Gemini UI")
-        with page.expect_download(timeout=60000) as dl_info:
-            page.click(f"{GEMINI_CONTAINER_SEL} >> {GEMINI_DOWNLOAD_BTN}", force=True)
-        download = dl_info.value
-        # give it a filename based on prompt‐hash + original file extension
-        suggested = download.suggested_filename or "image.png"
-        name = hashlib.sha256(prompt.encode()).hexdigest()[:8] + os.path.splitext(suggested)[1]
-        dst  = os.path.join(IMAGE_DIR, name)
-        download.save_as(dst)
-        print(f"[STEP] Saved image to {dst}")
+        print("[STEP] Waiting for download icon")
+        try:
+            page.wait_for_selector(GEMINI_DOWNLOAD_BTN, timeout=60000)
+        except TimeoutError:
+            raise RuntimeError("Download icon never appeared")
 
-        # now generate caption
+        print("[STEP] Clicking download icon")
+        with page.expect_download(timeout=60000) as dl_info:
+            page.click(GEMINI_DOWNLOAD_BTN, force=True)
+        download = dl_info.value
+        suggested = download.suggested_filename or "image.png"
+        name      = hashlib.sha256(suggested.encode()).hexdigest()[:8] + os.path.splitext(suggested)[1]
+        dst       = os.path.join(IMAGE_DIR, name)
+        download.save_as(dst)
+        print(f"[STEP] Image saved to {dst}")
+
+        # ——— get a caption
         editor.click(force=True)
         editor.fill("Write a short poetic mysterious caption for that image.", force=True)
         editor.press("Enter")
