@@ -1,158 +1,150 @@
 import os
-import sys
+import json
 import random
-import requests
 import time
-from datetime import datetime, timedelta
+import schedule
+import requests
+from datetime import datetime
+from playwright.sync_api import sync_playwright
+from PIL import Image
+import hashlib
 
-# ── ENV & DEBUG ─────────────────────────────────────────────────────────────
-REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
-if not REPLICATE_API_TOKEN:
-    print("❌ REPLICATE_API_TOKEN missing!", file=sys.stderr)
-    sys.exit(1)
+# ENV
+FB_PAGE_ID = os.getenv("FB_PAGE_ID")
+FB_PAGE_ACCESS_TOKEN = os.getenv("FB_PAGE_ACCESS_TOKEN")
 
-PAGE_ID       = os.getenv("FB_PAGE_ID")
-PAGE_TOKEN    = os.getenv("FB_PAGE_ACCESS_TOKEN")
-IMAGES_DIR    = "images"
-CAPTIONS_FILE = "captions.txt"
-POST_FLAG     = ".posted"
+# File paths
+IMAGE_DIR = "generated"
+COOKIES_PATH = "cookies.json"
+POSTED_HASHES_FILE = "posted_hashes.json"
+PROMPTS_FILE = "prompts.txt"
 
-# ── Hashtag pool ────────────────────────────────────────────────────────────
-HASHTAGS = [
-    "liminalspaces","moody","ethereal","dreamscape","nopeople",
-    "hdr","cinematic","haunting","emptyworlds","surreal"
-]
+# Ensure folders
+os.makedirs(IMAGE_DIR, exist_ok=True)
 
-# ── Clean up old images ──────────────────────────────────────────────────────
-def clean_old_images():
-    now    = time.time()
-    cutoff = now - 3*3600
-    for f in os.listdir(IMAGES_DIR):
-        path = os.path.join(IMAGES_DIR, f)
-        if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
-            os.remove(path)
-            print(f"[🗑️] Deleted old image: {path}")
+def load_posted_hashes():
+    if os.path.exists(POSTED_HASHES_FILE):
+        with open(POSTED_HASHES_FILE, "r") as f:
+            return set(json.load(f))
+    return set()
 
-# ── Generate & download via Replicate ────────────────────────────────────────
-def generate_image():
-    os.makedirs(IMAGES_DIR, exist_ok=True)
-    clean_old_images()
+def save_posted_hashes(hashes):
+    with open(POSTED_HASHES_FILE, "w") as f:
+        json.dump(list(hashes), f)
 
-    style = random.choice(["moody", "light"])
-    prompt = (
-        "A dark, empty corridor under a neon moon, eerie shadows, liminal space, cinematic"
-        if style=="moody"
-        else
-        "A bright, abandoned hallway with soft morning light, ethereal liminal space, high detail"
-    )
-    print(f"[+] Generating {style} image via Replicate…")
+posted_hashes = load_posted_hashes()
 
-    # 1) Submit prediction
-    post_resp = requests.post(
-        "https://api.replicate.com/v1/predictions",
-        headers={
-            "Authorization": f"Token {REPLICATE_API_TOKEN}",
-            "Content-Type": "application/json"
-        },
-        json={
-            "model": "stability-ai/stable-diffusion",
-            "version": "latest",
-            "input": {"prompt": prompt}
-        }
-    )
-    if not post_resp.ok:
-        raise RuntimeError(f"❌ Replicate POST error {post_resp.status_code}: {post_resp.text}")
-    pred = post_resp.json()
-    pred_id  = pred.get("id")
-    poll_url = pred.get("urls", {}).get("get")
+def random_prompt():
+    if os.path.exists(PROMPTS_FILE):
+        with open(PROMPTS_FILE, "r") as f:
+            return random.choice(f.readlines()).strip()
+    return "a liminal dream hallway with red lights and fog"
 
-    if not pred_id or not poll_url:
-        raise RuntimeError(f"❌ Unexpected Replicate response: {pred}")
+def generate_image_and_caption():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context()
 
-    # 2) Poll until done
-    while True:
-        get_resp = requests.get(poll_url, headers={"Authorization": f"Token {REPLICATE_API_TOKEN}"})
-        if not get_resp.ok:
-            raise RuntimeError(f"❌ Replicate GET error {get_resp.status_code}: {get_resp.text}")
-        pred = get_resp.json()
-        status = pred.get("status")
-        if status in ("succeeded","failed"):
-            break
-        time.sleep(1)
+        # Load cookies
+        if os.getenv("GEMINI_COOKIES_JSON"):
+            cookies = json.loads(os.getenv("GEMINI_COOKIES_JSON"))
+        else:
+            with open(COOKIES_PATH, "r") as f:
+                cookies = json.load(f)
+        context.add_cookies(cookies)
 
-    if status == "failed":
-        raise RuntimeError("❌ Replicate generation failed: " + str(pred.get("error")))
+        page = context.new_page()
+        page.goto("https://gemini.google.com/app")
+        page.wait_for_timeout(4000)
 
-    # 3) Download output
-    output = pred.get("output")
-    if not output or not isinstance(output, list):
-        raise RuntimeError(f"❌ Missing output in Replicate response: {pred}")
+        prompt = random_prompt()
+        print(f"[>] Prompting Gemini: {prompt}")
+        page.fill("textarea", prompt)
+        page.press("textarea", "Enter")
 
-    img_url = output[0]
-    img_data = requests.get(img_url).content
+        page.wait_for_timeout(8000)
 
-    fname = f"{int(time.time())}.png"
-    path  = os.path.join(IMAGES_DIR, fname)
-    with open(path, "wb") as f:
-        f.write(img_data)
-    print(f"[✅] Generated image saved: {path}")
-    return path
+        # Click image
+        page.click("img[alt='Generated image']")
+        page.wait_for_selector("button:has-text('Download')")
+        page.click("button:has-text('Download')")
 
-# ── Caption & hashtags ──────────────────────────────────────────────────────
-def generate_caption():
-    if os.path.exists(CAPTIONS_FILE):
-        lines = [l.strip() for l in open(CAPTIONS_FILE, encoding="utf-8") if l.strip()]
-        return random.choice(lines)
-    return "An empty hallway whispers secrets to the wandering soul."
+        page.wait_for_timeout(5000)
 
-def generate_hashtags(n=5):
-    return " ".join("#"+tag for tag in random.sample(HASHTAGS, k=n))
+        # Get latest downloaded image
+        downloads = os.listdir(os.path.expanduser("~/Downloads"))
+        images = [f for f in downloads if f.endswith(".png")]
+        if not images:
+            raise RuntimeError("❌ Image not downloaded")
 
-# ── Facebook upload ─────────────────────────────────────────────────────────
-def post_to_facebook(image_path, caption, hashtags):
-    text = f"{caption}\n\n{hashtags}"
-    print(f"[+] Posting {image_path}\n    Caption: {caption}\n    {hashtags}")
-    with open(image_path, "rb") as img:
-        resp = requests.post(
-            f"https://graph.facebook.com/{PAGE_ID}/photos",
-            files={"source": img},
-            data={"caption": text, "access_token": PAGE_TOKEN}
-        )
-    if resp.ok:
-        print("[✅] Posted:", resp.json().get("post_id"))
-    else:
-        print("[❌] Post failed:", resp.text)
+        latest = max(images, key=lambda x: os.path.getctime(os.path.join(os.path.expanduser("~/Downloads"), x)))
+        src_path = os.path.join(os.path.expanduser("~/Downloads"), latest)
+        dst_path = os.path.join(IMAGE_DIR, latest)
+        os.rename(src_path, dst_path)
 
-# ── First-run guard & scheduler ─────────────────────────────────────────────
-def already_posted():
-    return os.path.exists(POST_FLAG)
-def mark_posted():
-    open(POST_FLAG, "w").write("posted")
+        print(f"[✓] Saved image: {dst_path}")
+
+        # Ask for caption
+        page.fill("textarea", f"Write a short poetic mysterious caption for that image.")
+        page.press("textarea", "Enter")
+        page.wait_for_timeout(6000)
+
+        responses = page.locator("div").all_text_contents()
+        caption = None
+        for r in reversed(responses):
+            if len(r.strip()) > 10 and len(r.strip()) < 300:
+                caption = r.strip()
+                break
+
+        if not caption:
+            caption = "A place you've seen in dreams."
+
+        print(f"[📝] Caption: {caption}")
+
+        browser.close()
+        return dst_path, caption
+
+def hash_image(path):
+    with open(path, 'rb') as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+def post_to_facebook(image_path, caption):
+    print("📤 Uploading to Facebook...")
+    with open(image_path, 'rb') as img_file:
+        files = {'source': img_file}
+        data = {'caption': caption, 'access_token': FB_PAGE_ACCESS_TOKEN}
+        url = f"https://graph.facebook.com/{FB_PAGE_ID}/photos"
+        r = requests.post(url, files=files, data=data)
+
+    if r.status_code != 200:
+        raise RuntimeError(f"❌ Facebook post failed: {r.status_code} {r.text}")
+    print("✅ Posted to Facebook")
 
 def run_once():
-    img  = generate_image()
-    cap  = generate_caption()
-    tags = generate_hashtags()
-    post_to_facebook(img, cap, tags)
+    try:
+        img_path, caption = generate_image_and_caption()
+        img_hash = hash_image(img_path)
+        if img_hash in posted_hashes:
+            print("⏩ Already posted this image.")
+            return
+        post_to_facebook(img_path, caption)
+        posted_hashes.add(img_hash)
+        save_posted_hashes(posted_hashes)
+    except Exception as e:
+        print(f"[!] Error: {e}")
 
-def schedule_posts():
-    count = random.randint(1,4)
-    print(f"[+] Scheduling {count} post(s) today.")
-    for _ in range(count):
-        hrs = random.randint(1,24)
-        print(f"    ⏰ Sleeping {hrs}h…")
-        time.sleep(hrs*3600)
-        run_once()
+def schedule_daily_posts():
+    times = sorted(random.sample(range(24), random.randint(1, 4)))
+    for hour in times:
+        schedule.every().day.at(f"{hour:02}:00").do(run_once)
+    print(f"📅 Scheduled posts at: {times}")
 
-# ── Entrypoint ──────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    os.makedirs(IMAGES_DIR, exist_ok=True)
+if not posted_hashes:
+    print("🚀 First run — doing test post")
+    run_once()
 
-    if not already_posted():
-        run_once()
-        mark_posted()
-    else:
-        print("[🛑] Initial post done—skipping.")
+schedule_daily_posts()
 
-    while True:
-        schedule_posts()
+while True:
+    schedule.run_pending()
+    time.sleep(30)
