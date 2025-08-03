@@ -1,5 +1,4 @@
-diffusers
-transformers
-torch
-gpt4all
+huggingface_hub
+llama-cpp-python
 requests
+Pillow
