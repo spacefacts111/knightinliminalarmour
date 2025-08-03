@@ -9,12 +9,11 @@ from diffusers import StableDiffusionPipeline
 import torch
 
 # === ENV VARS ===
-GDRIVE_FILE_ID = os.getenv("GDRIVE_FILE_ID")              # for GPT4All model if you ever switch back
-PAGE_ID          = os.getenv("FB_PAGE_ID")
-PAGE_TOKEN       = os.getenv("FB_PAGE_ACCESS_TOKEN")
-IMAGES_DIR       = "images"
-CAPTIONS_FILE    = "captions.txt"
-POST_FLAG        = ".posted"
+PAGE_ID        = os.getenv("FB_PAGE_ID")
+PAGE_TOKEN     = os.getenv("FB_PAGE_ACCESS_TOKEN")
+IMAGES_DIR     = "images"
+CAPTIONS_FILE  = "captions.txt"
+POST_FLAG      = ".posted"
 
 # ---- Hashtag pool ----
 HASHTAGS = [
@@ -22,7 +21,7 @@ HASHTAGS = [
     "hdr","cinematic","haunting","emptyworlds","surreal"
 ]
 
-# === 1) Image pipeline (load once) ===
+# === Stable Diffusion pipeline singleton ===
 _pipe = None
 def get_sd_pipe():
     global _pipe
@@ -33,12 +32,21 @@ def get_sd_pipe():
         _pipe = _pipe.to(device)
     return _pipe
 
-# === 2) Generate a new liminal image ===
-def generate_image():
-    # ensure folder
-    os.makedirs(IMAGES_DIR, exist_ok=True)
+# === 1) Clean up images older than 3 hours ===
+def clean_old_images():
+    now = time.time()
+    cutoff = now - 3 * 3600  # 3 hours ago
+    for fname in os.listdir(IMAGES_DIR):
+        path = os.path.join(IMAGES_DIR, fname)
+        if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+            os.remove(path)
+            print(f"[🗑️] Deleted old image: {path}")
 
-    # choose style
+# === 2) Generate a new liminal space image ===
+def generate_image():
+    os.makedirs(IMAGES_DIR, exist_ok=True)
+    clean_old_images()
+
     style = random.choice(["moody", "light"])
     if style == "moody":
         prompt = "A dark, empty corridor under a neon moon, eerie shadows, liminal space, cinematic"
@@ -46,23 +54,22 @@ def generate_image():
         prompt = "A bright, abandoned hallway with soft morning light, ethereal liminal space, high detail"
 
     pipe = get_sd_pipe()
-    img   = pipe(prompt).images[0]
+    img  = pipe(prompt).images[0]
 
-    # save with timestamp
     fname = f"{int(time.time())}.png"
     path  = os.path.join(IMAGES_DIR, fname)
     img.save(path)
     print(f"[+] Generated image ({style}): {path}")
     return path
 
-# === 3) Caption from file ===
+# === 3) Pick a caption from file or fallback ===
 def generate_caption():
     if os.path.exists(CAPTIONS_FILE):
         lines = [l.strip() for l in open(CAPTIONS_FILE, encoding="utf-8") if l.strip()]
         return random.choice(lines)
     return "An empty hallway whispers secrets to the wandering soul."
 
-# === 4) Build hashtags string ===
+# === 4) Build a hashtag string ===
 def generate_hashtags(n=5):
     return " ".join("#"+tag for tag in random.sample(HASHTAGS, k=n))
 
@@ -87,7 +94,7 @@ def already_posted():
 def mark_posted():
     open(POST_FLAG, "w").write("posted")
 
-# === 7) One-off post ===
+# === 7) Single post cycle ===
 def run_once():
     img  = generate_image()
     cap  = generate_caption()
@@ -98,23 +105,21 @@ def run_once():
 def schedule_posts():
     count = random.randint(1,4)
     print(f"[+] Scheduling {count} posts today.")
-    for i in range(count):
+    for _ in range(count):
         hours = random.randint(1,24)
-        print(f"    ⏰ Waiting {hours}h until next post…")
+        print(f"    ⏰ Sleeping {hours}h until next post…")
         time.sleep(hours * 3600)
         run_once()
 
-# === Main ===
+# === Main entrypoint ===
 if __name__ == "__main__":
     os.makedirs(IMAGES_DIR, exist_ok=True)
 
-    # Skip duplicate first-run post on redeploy
     if not already_posted():
         run_once()
         mark_posted()
     else:
         print("[🛑] Initial post already made — skipping.")
 
-    # Enter perpetual scheduler loop
     while True:
         schedule_posts()
