@@ -84,6 +84,21 @@ def generate_image_and_caption(prompt="liminal space aesthetic, no people"):
         browser.close()
         return img_url, caption
 
+def click_button_by_keywords(page, keywords):
+    for keyword in keywords:
+        log(f"Scanning page for '{keyword}'...")
+        try:
+            elements = page.locator(f"text={keyword}").all()
+            for el in elements:
+                if not el.is_visible():
+                    continue
+                el.evaluate("el => el.closest('[role=button], [tabindex]')?.click()")
+                log(f"✅ Clicked button with keyword: {keyword}")
+                return True
+        except:
+            continue
+    return False
+
 def post_to_facebook_with_cookies(img_url, caption):
     log("Starting Facebook post using cookies...")
     with sync_playwright() as p:
@@ -100,16 +115,15 @@ def post_to_facebook_with_cookies(img_url, caption):
         page.goto(f"https://www.facebook.com/{os.getenv('FB_PAGE_ID')}")
         page.wait_for_timeout(8000)
 
+        # 🔍 Smart scan for any post/upload button
         try:
-            log("Waiting for 'Photo/video' button...")
-            # ✅ New Gemini-style working selector
-            photo_btn = page.locator("div[role='button']:has(span:text('Photo/video'))")
-            photo_btn.wait_for(timeout=10000)
-            photo_btn.click()
-            log("✅ Clicked 'Photo/video'")
+            log("Looking for post/upload buttons by keywords...")
+            success = click_button_by_keywords(page, ["Photo/video", "Create post", "New post", "Upload", "Post something"])
+            if not success:
+                page.screenshot(path="fb_fail_photo_button.png")
+                raise Exception("❌ Could not find any matching post/upload buttons.")
         except:
-            page.screenshot(path="fb_fail_photo_button.png")
-            raise Exception("❌ Could not find or click 'Photo/video' button. Screenshot saved.")
+            raise
 
         log("Uploading image...")
         with page.expect_file_chooser() as fc_info:
