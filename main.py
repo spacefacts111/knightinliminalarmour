@@ -7,6 +7,9 @@ from huggingface_hub import InferenceClient
 from llama_cpp import Llama
 from PIL import Image
 
+# === Ensure 'models/' folder exists before anything ===
+os.makedirs("models", exist_ok=True)
+
 # === Config ===
 CAPTIONS_MODEL_PATH = "models/nous-hermes-llama2.gguf"
 CAPTIONS_MODEL_URL = "https://huggingface.co/TheBloke/Nous-Hermes-Llama2-GGUF/resolve/main/nous-hermes-llama2.Q4_K_M.gguf"
@@ -14,8 +17,7 @@ CAPTIONS_MODEL_URL = "https://huggingface.co/TheBloke/Nous-Hermes-Llama2-GGUF/re
 FB_PAGE_ID = os.getenv("FB_PAGE_ID")
 FB_ACCESS_TOKEN = os.getenv("FB_ACCESS_TOKEN")
 
-# === Ensure model is present ===
-os.makedirs("models", exist_ok=True)
+# === Download caption model if missing ===
 if not os.path.exists(CAPTIONS_MODEL_PATH):
     print("[+] Downloading caption model...")
     r = requests.get(CAPTIONS_MODEL_URL, stream=True)
@@ -83,9 +85,9 @@ def main_loop():
         print(f"[+] Sleeping for {wait_seconds / 3600:.2f} hours...")
         time.sleep(wait_seconds)
 
-# === Initial run ===
+# === Initial test post ===
 print("[+] Running test post...")
 run_once()
 
-# === Loop after test ===
+# === Start scheduled loop ===
 main_loop()
