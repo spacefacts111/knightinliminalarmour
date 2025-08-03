@@ -96,19 +96,18 @@ def post_to_facebook_with_cookies(img_url, caption):
         context.add_cookies(fb_cookies)
 
         page = context.new_page()
-        log("Opening Facebook pages...")
-        page.goto("https://www.facebook.com/pages")
-        page.wait_for_timeout(5000)
-
+        log("Opening Facebook Page...")
         page.goto(f"https://www.facebook.com/{os.getenv('FB_PAGE_ID')}")
-        page.wait_for_timeout(5000)
+        page.wait_for_timeout(8000)
 
         try:
-            log("Clicking 'Photo/video' button...")
-            page.locator(":text('Photo/video')").first.click()
+            log("Waiting for 'Photo/video' button...")
+            page.wait_for_selector("span.x1lliihq:has-text('Photo/video')", timeout=15000)
+            page.locator("span.x1lliihq:has-text('Photo/video')").click()
+            log("✅ Clicked 'Photo/video'")
         except:
-            page.screenshot(path="fb_post_fail.png")
-            raise Exception("❌ Couldn't find 'Photo/video' button. Screenshot saved.")
+            page.screenshot(path="fb_fail_photo_button.png")
+            raise Exception("❌ Could not find or click 'Photo/video' button. Screenshot saved.")
 
         log("Uploading image...")
         with page.expect_file_chooser() as fc_info:
@@ -118,37 +117,35 @@ def post_to_facebook_with_cookies(img_url, caption):
 
         page.wait_for_timeout(5000)
 
-        # Try multiple caption box selectors
-        log("Finding caption box...")
         try:
+            log("Finding caption input...")
+            page.wait_for_selector("div[role='textbox']", timeout=10000)
             caption_box = page.locator("div[role='textbox']").first
             caption_box.fill(caption)
+            log("✅ Caption filled")
         except:
-            try:
-                caption_box = page.locator("textarea").first
-                caption_box.fill(caption)
-            except:
-                page.screenshot(path="fb_caption_fail.png")
-                raise Exception("❌ Couldn't find caption input box. Screenshot saved.")
+            page.screenshot(path="fb_fail_caption.png")
+            raise Exception("❌ Could not find caption input box. Screenshot saved.")
 
-        # Optional: Click "Next" if shown
         try:
-            next_btn = page.locator(":text('Next')").first
-            if next_btn.is_visible():
-                log("Clicking 'Next' button...")
-                next_btn.click()
+            log("Checking for 'Next' button...")
+            next_button = page.locator("div[aria-label='Next'], div:has-text('Next')")
+            if next_button.is_visible():
+                next_button.click()
+                log("✅ Clicked 'Next'")
                 page.wait_for_timeout(2000)
         except:
-            log("No 'Next' button found. Continuing...")
+            log("No 'Next' button visible. Continuing...")
 
-        # Try multiple post button variations
         try:
-            log("Clicking 'Post' button...")
-            post_btn = page.locator(":text('Post')").last
-            post_btn.click()
+            log("Waiting for 'Post' button...")
+            post_button = page.locator("div[aria-label='Post'], div:has-text('Post')").first
+            post_button.wait_for(timeout=10000)
+            post_button.click()
+            log("✅ Clicked 'Post' button")
         except:
-            page.screenshot(path="fb_postbtn_fail.png")
-            raise Exception("❌ Couldn't find 'Post' button. Screenshot saved.")
+            page.screenshot(path="fb_fail_post.png")
+            raise Exception("❌ Could not find or click 'Post' button. Screenshot saved.")
 
         page.wait_for_timeout(5000)
         browser.close()
