@@ -1,3 +1,4 @@
-gpt4all
+diffusers
+torch         # CPU or GPU build
+transformers
 requests
-gdown
