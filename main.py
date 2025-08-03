@@ -17,7 +17,7 @@ COOKIES_PATH = "cookies.json"
 POSTED_HASHES_FILE = "posted_hashes.json"
 PROMPTS_FILE = "prompts.txt"
 
-# Ensure necessary directory exists
+# Ensure directory exists
 os.makedirs(IMAGE_DIR, exist_ok=True)
 
 def load_posted_hashes():
@@ -41,63 +41,91 @@ def random_prompt():
 def generate_image_and_caption():
     print("[DEBUG] Starting generate_image_and_caption")
     with sync_playwright() as p:
-        print("[DEBUG] Launching headless browser")
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(accept_downloads=True)
-
-        # Load your Gemini login cookies
+        # Load cookies
         with open(COOKIES_PATH, "r") as f:
             cookies = json.load(f)
         context.add_cookies(cookies)
         print("[DEBUG] Cookies added")
-
         page = context.new_page()
-        print("[DEBUG] Navigating to Gemini")
-        page.goto("https://gemini.google.com/app")
-        print("[DEBUG] Page URL:", page.url)
 
-        # Wait for the new rich-text editor
-        print("[DEBUG] Waiting for prompt editor")
-        page.wait_for_selector("div.ql-editor[contenteditable='true']", timeout=60000)
-        editor = page.locator("div.ql-editor[contenteditable='true']")
-        prompt = random_prompt()
-        print(f"[DEBUG] Prompt: {prompt}")
-        editor.click()
-        editor.fill(prompt)
-        editor.press("Enter")
-        print("[DEBUG] Prompt sent, waiting for blob image")
+        # LIVE-CHAT MODE
+        dst = None
+        caption = None
+        try:
+            print("[DEBUG] LIVE MODE: Navigate to chat")
+            page.goto("https://gemini.google.com/app")
+            print("[DEBUG] Waiting for editor")
+            page.wait_for_selector("div.ql-editor[contenteditable='true']", timeout=60000)
+            editor = page.locator("div.ql-editor[contenteditable='true']")
+            prompt = random_prompt()
+            print(f"[DEBUG] Prompt: {prompt}")
+            editor.click()
+            editor.fill(prompt)
+            editor.press("Enter")
 
-        # Wait for any blob: images
-        page.wait_for_selector("img[src^='blob:']", timeout=60000)
-        images = page.locator("img[src^='blob:']")
-        count = images.count()
-        if count == 0:
-            raise RuntimeError("❌ No blob images found")
-        print(f"[DEBUG] Found {count} blob images; clicking the newest one")
-        images.nth(count - 1).click()
+            print("[DEBUG] Waiting for blob image")
+            page.wait_for_selector("img[src^='blob:']", timeout=60000)
+            imgs = page.locator("img[src^='blob:']")
+            count = imgs.count()
+            print(f"[DEBUG] Found {count} blob images")
+            imgs.nth(count - 1).click()
 
-        # Download the image
-        print("[DEBUG] Waiting for download button")
-        page.wait_for_selector("button:has-text('Download')", timeout=10000)
-        with page.expect_download(timeout=30000) as dl_info:
-            page.click("button:has-text('Download')")
-        download = dl_info.value
-        dst = os.path.join(IMAGE_DIR, download.suggested_filename)
-        download.save_as(dst)
-        print(f"[DEBUG] Download saved to {dst}")
+            print("[DEBUG] Waiting for download button")
+            page.wait_for_selector("button:has-text('Download')", timeout=10000)
+            with page.expect_download(timeout=30000) as dl:
+                page.click("button:has-text('Download')")
+            download = dl.value
+            dst = os.path.join(IMAGE_DIR, download.suggested_filename)
+            download.save_as(dst)
+            print(f"[DEBUG] LIVE MODE: Download saved to {dst}")
 
-        # Ask Gemini for a caption
-        editor.click()
-        editor.fill("Write a short poetic mysterious caption for that image.")
-        editor.press("Enter")
-        print("[DEBUG] Caption prompt sent")
-        page.wait_for_timeout(7000)
-        responses = page.locator("div").all_text_contents()
-        caption = next((r.strip() for r in reversed(responses) if 10 < len(r.strip()) < 300), None)
+            # Caption prompt
+            editor.click()
+            editor.fill("Write a short poetic mysterious caption for that image.")
+            editor.press("Enter")
+            print("[DEBUG] Waiting for caption")
+            page.wait_for_timeout(7000)
+            texts = page.locator("div").all_text_contents()
+            caption = next((t.strip() for t in reversed(texts) if 10 < len(t.strip()) < 300), None)
+
+        except Exception as live_err:
+            print(f"[WARN] Live mode failed: {live_err}")
+            # HISTORY FALLBACK
+            try:
+                print("[DEBUG] FALLBACK MODE: Navigate to history")
+                page.goto("https://gemini.google.com/app/history")
+                page.wait_for_selector("img[src^='blob:']", timeout=60000)
+                hist = page.locator("img[src^='blob:']")
+                count = hist.count()
+                print(f"[DEBUG] Found {count} history images")
+                hist.nth(0).click()
+                with page.expect_download(timeout=30000) as dl2:
+                    page.click("button:has-text('Download')")
+                download = dl2.value
+                dst = os.path.join(IMAGE_DIR, download.suggested_filename)
+                download.save_as(dst)
+                print(f"[DEBUG] HISTORY MODE: Download saved to {dst}")
+                # Try caption in history view if available
+                try:
+                    editor = page.locator("div.ql-editor[contenteditable='true']")
+                    editor.click()
+                    editor.fill("Write a short poetic mysterious caption for that image.")
+                    editor.press("Enter")
+                    page.wait_for_timeout(7000)
+                    texts = page.locator("div").all_text_contents()
+                    caption = next((t.strip() for t in reversed(texts) if 10 < len(t.strip()) < 300), None)
+                except:
+                    caption = None
+            except Exception as hist_err:
+                print(f"[ERROR] Both live and history modes failed: {hist_err}")
+
+        if not dst:
+            raise RuntimeError("❌ Failed to download image in both modes")
         if not caption:
             caption = "A place you’ve seen in dreams."
         print(f"[DEBUG] Caption: {caption}")
-
         browser.close()
         return dst, caption
 
@@ -107,8 +135,8 @@ def hash_image(path):
 
 def post_to_facebook(image_path, caption):
     print("[DEBUG] Posting to Facebook")
-    with open(image_path, 'rb') as img:
-        files = {'source': img}
+    with open(image_path, 'rb') as img_file:
+        files = {'source': img_file}
         data = {'caption': caption, 'access_token': FB_PAGE_ACCESS_TOKEN}
         url = f"https://graph.facebook.com/{FB_PAGE_ID}/photos"
         r = requests.post(url, files=files, data=data)
@@ -120,7 +148,7 @@ def run_once():
     print("[DEBUG] run_once start")
     try:
         img_path, caption = generate_image_and_caption()
-        print("[DEBUG] Image & caption ready")
+        print("[DEBUG] Image & caption generated")
         img_hash = hash_image(img_path)
         if img_hash in posted_hashes:
             print("[DEBUG] Duplicate image—skipping")
