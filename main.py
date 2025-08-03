@@ -1,189 +1,143 @@
-import os
 import json
-import time
-import schedule
-import hashlib
+import os
 import random
-from playwright.sync_api import sync_playwright, TimeoutError
+import time
+from datetime import datetime
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
-# ─── CONFIG ────────────────────────────────────────────────────
-FB_PAGE_ID           = os.getenv("FB_PAGE_ID")
-GEMINI_STORAGE       = "cookies.json"
-FB_STORAGE           = "fb_storage.json"
-POSTED_HASHES_FILE   = "posted_hashes.json"
-PROMPTS_FILE         = "prompts.txt"
-IMAGE_DIR            = "generated"
-# selectors
-EDITOR_SEL           = 'div.ql-editor[aria-label="Enter a prompt here"]'
-LIVE_IMG_SEL         = "img[src^='blob:']"
-HIST_IMG_SEL         = "div.attachment-container.generated-images img.image"
-# ────────────────────────────────────────────────────────────────
-
-os.makedirs(IMAGE_DIR, exist_ok=True)
+POSTED_HASHES_FILE = "posted_hashes.json"
 if not os.path.exists(POSTED_HASHES_FILE):
     with open(POSTED_HASHES_FILE, "w") as f:
         json.dump([], f)
 
-def load_hashes():
-    print("[STEP] Loading posted hashes")
-    h = set(json.load(open(POSTED_HASHES_FILE)))
-    print(f"[STEP] {len(h)} loaded")
-    return h
+def load_posted_hashes():
+    with open(POSTED_HASHES_FILE, "r") as f:
+        return json.load(f)
 
-def save_hashes(h):
-    print(f"[STEP] Saving {len(h)} hashes")
+def save_posted_hashes(hashes):
     with open(POSTED_HASHES_FILE, "w") as f:
-        json.dump(list(h), f)
+        json.dump(hashes, f)
 
-def random_prompt():
-    if os.path.exists(PROMPTS_FILE):
-        lines = [l.strip() for l in open(PROMPTS_FILE) if l.strip()]
-        if lines:
-            choice = random.choice(lines)
-            print(f"[STEP] Prompt chosen from list: {choice!r}")
-            return choice
-    default = "a liminal dream hallway with red lights and fog"
-    print(f"[STEP] Using default prompt: {default!r}")
-    return default
-
-posted = load_hashes()
-
-def generate_image_and_caption():
-    print("[STEP] generate_image_and_caption")
+# Gemini image + caption generator
+def generate_image_and_caption(prompt="liminal space aesthetic, no people"):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        ctx     = browser.new_context(storage_state=GEMINI_STORAGE)
-        page    = ctx.new_page()
+        context = browser.new_context()
 
-        print("[STEP] Navigating to Gemini")
-        page.goto("https://gemini.google.com/app", timeout=120000)
+        # ✅ Load Gemini cookies from local file
+        with open("cookies.json", "r") as f:
+            gemini_cookies = json.load(f)
+        context.add_cookies(gemini_cookies)
 
-        # Live mode
-        try:
-            print("[STEP] LIVE MODE: waiting for editor")
-            editor = page.wait_for_selector(EDITOR_SEL, timeout=120000)
-            prompt = random_prompt()
+        page = context.new_page()
+        page.goto("https://gemini.google.com/app")
 
-            print(f"[STEP] LIVE MODE: typing prompt {prompt!r}")
-            editor.click(force=True)
-            editor.fill(prompt, force=True)
-            editor.press("Enter")
+        if "accounts.google.com" in page.url:
+            raise Exception("Gemini session expired. Update cookies.json")
 
-            print("[STEP] LIVE MODE: waiting for blob img")
-            page.wait_for_selector(LIVE_IMG_SEL, timeout=60000)
-            src = page.query_selector(LIVE_IMG_SEL).get_attribute("src")
-            print(f"[STEP] LIVE MODE: found blob src {src[:50]}...")
+        prompt_selectors = [
+            'div.ql-editor[aria-label="Enter a prompt here"]',
+            'rich-textarea[aria-label="Enter a prompt here"]',
+            'div[contenteditable="true"][role="textbox"]',
+        ]
 
-            # download blob via fetch
-            data = page.evaluate("""src => fetch(src).then(r=>r.blob())
-                                      .then(b=>new Response(b).arrayBuffer())""", src)
-            dst = os.path.join(IMAGE_DIR, hashlib.sha256(src.encode()).hexdigest()[:8] + ".png")
-            with open(dst, "wb") as f:
-                f.write(bytes(data))
-            print(f"[STEP] LIVE MODE: image saved to {dst}")
-
-        except Exception as e:
-            print(f"[WARN] Live mode failed: {e!r}")
-            print("[STEP] FALLBACK MODE: navigating to history")
-            page.goto("https://gemini.google.com/app", timeout=120000)
-            page.wait_for_selector("infinite-scroller", timeout=120000)
+        for sel in prompt_selectors:
             try:
-                page.wait_for_selector(HIST_IMG_SEL, timeout=60000)
-                img_el = page.query_selector_all(HIST_IMG_SEL)[-1]
-                src = img_el.get_attribute("src")
-                print(f"[STEP] HISTORY MODE: found history src {src[:50]}...")
-                data = ctx.request.get(src).body()
-                dst = os.path.join(IMAGE_DIR, hashlib.sha256(src.encode()).hexdigest()[:8] + ".png")
-                with open(dst, "wb") as f:
-                    f.write(data)
-                print(f"[STEP] HISTORY MODE: image saved to {dst}")
-            except Exception as e2:
-                browser.close()
-                raise RuntimeError(f"Both live and history modes failed: {e2!r}")
+                page.wait_for_selector(sel, timeout=10000)
+                editor = page.locator(sel)
+                editor.fill(prompt)
+                editor.press("Enter")
+                break
+            except:
+                continue
+        else:
+            raise Exception("Prompt box not found.")
 
-        # Caption
-        print("[STEP] Generating caption")
-        editor.click(force=True)
-        editor.fill("Write a short poetic mysterious caption for that image.", force=True)
-        editor.press("Enter")
-        page.wait_for_timeout(7000)
-        texts = page.locator("div").all_text_contents()
-        caption = next(
-            (t.strip() for t in reversed(texts)
-             if t.strip() not in (prompt, "") and 10 < len(t.strip()) < 300),
-            "A place you’ve seen in dreams."
-        )
-        print(f"[STEP] Caption: {caption!r}")
+        try:
+            page.wait_for_selector("img.animate.loaded", timeout=120000)
+            img_url = page.query_selector("img.animate.loaded").get_attribute("src")
+            caption_elem = page.query_selector("div.model-response-text")
+            caption = caption_elem.inner_text().strip() if caption_elem else "A liminal space."
+        except PlaywrightTimeout:
+            raise Exception("Image generation timed out.")
 
         browser.close()
-        return dst, caption
+        return img_url, caption
 
-def post_to_facebook(image_path, caption):
-    print("[STEP] post_to_facebook")
+# Facebook poster via cookies
+def post_to_facebook_with_cookies(img_url, caption):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        ctx     = browser.new_context(storage_state=FB_STORAGE)
-        page    = ctx.new_page()
+        context = browser.new_context()
 
-        print(f"[STEP] Navigating to Facebook Page {FB_PAGE_ID}")
-        page.goto(f"https://www.facebook.com/{FB_PAGE_ID}", timeout=60000)
+        # ✅ Load Facebook cookies from fb_cookies.json
+        with open("fb_cookies.json", "r") as f:
+            fb_cookies = json.load(f)
+        context.add_cookies(fb_cookies)
 
-        print("[STEP] Opening composer")
-        page.wait_for_selector("div[aria-label='Create a post']", timeout=60000)
-        page.click("div[aria-label='Create a post']", force=True)
-
-        print("[STEP] Uploading image")
-        page.wait_for_selector("input[type=file']", timeout=30000)
-        page.set_input_files("input[type=file']", image_path)
-
-        print("[STEP] Filling caption")
-        page.wait_for_selector("div[aria-label='Write a post']", timeout=30000)
-        page.fill("div[aria-label='Write a post']", caption)
-
-        print("[STEP] Posting")
-        page.click("div[aria-label='Post']", force=True)
+        page = context.new_page()
+        page.goto("https://www.facebook.com/pages")
         page.wait_for_timeout(5000)
 
+        # Go directly to Page
+        page.goto(f"https://www.facebook.com/{os.getenv('FB_PAGE_ID')}")
+        page.wait_for_timeout(5000)
+
+        try:
+            page.locator("text=Photo/video").click()
+        except:
+            raise Exception("Couldn't find post button. Facebook layout changed?")
+
+        # Upload image
+        with page.expect_file_chooser() as fc_info:
+            page.locator("input[type='file']").click()
+        chooser = fc_info.value
+        chooser.set_files(download_image(img_url))
+
+        page.wait_for_timeout(5000)
+
+        # Write caption
+        caption_box = page.locator("div[role='textbox']").first
+        caption_box.fill(caption)
+
+        # Post it
+        page.locator("text=Post").last.click()
+        page.wait_for_timeout(5000)
         browser.close()
-        print("[STEP] FB post complete")
+        print("✅ Posted to Facebook with cookies!")
+
+def download_image(url, filename="post.jpg"):
+    import requests
+    r = requests.get(url)
+    with open(filename, "wb") as f:
+        f.write(r.content)
+    return filename
 
 def run_once():
-    print("[STEP] run_once start")
+    posted = load_posted_hashes()
     try:
-        img, cap = generate_image_and_caption()
+        img_url, caption = generate_image_and_caption()
+        if img_url in posted:
+            print("⚠️ Already posted this image.")
+            return
+        post_to_facebook_with_cookies(img_url, caption)
+        posted.append(img_url)
+        save_posted_hashes(posted)
     except Exception as e:
-        print(f"[ERROR] Generation failed: {e}")
-        return
+        print("❌", str(e))
 
-    h = hashlib.sha256(open(img, "rb").read()).hexdigest()
-    print(f"[STEP] Image hash: {h}")
-    if h in posted:
-        print("[STEP] Duplicate detected, skipping")
-        os.remove(img)
-        return
+def schedule_posts(n=4):
+    hours = sorted(random.sample(range(24), n))
+    print("[STEP] Scheduled at hours:", hours)
 
-    try:
-        post_to_facebook(img, cap)
-    except Exception as e:
-        print(f"[ERROR] FB post failed: {e}")
-        os.remove(img)
-        return
-
-    posted.add(h)
-    save_hashes(posted)
-    os.remove(img)
-    print("[STEP] run_once complete")
-
-def schedule_posts():
-    print("[STEP] Scheduling posts")
-    hours = sorted(random.sample(range(24), random.randint(1,4)))
-    for h in hours:
-        schedule.every().day.at(f"{h:02}:00").do(run_once)
-    print(f"[STEP] Scheduled at hours: {hours}")
+    while True:
+        now = datetime.now().hour
+        if now in hours:
+            run_once()
+            time.sleep(3600)
+        else:
+            time.sleep(300)
 
 if __name__ == "__main__":
     run_once()
-    schedule_posts()
-    while True:
-        schedule.run_pending()
-        time.sleep(30)
+    schedule_posts(random.randint(1, 4))
