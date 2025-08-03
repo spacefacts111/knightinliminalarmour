@@ -47,8 +47,9 @@ def generate_image_and_caption():
         context.add_cookies(cookies)
 
         page = context.new_page()
+        print("[🌐] Loading Gemini...")
         page.goto("https://gemini.google.com/app")
-        page.wait_for_timeout(4000)
+        page.wait_for_selector("textarea", timeout=45000)
 
         prompt = random_prompt()
         print(f"[🧠] Prompting Gemini: {prompt}")
@@ -56,11 +57,23 @@ def generate_image_and_caption():
         page.press("textarea", "Enter")
         page.wait_for_timeout(10000)
 
-        page.click("img[alt='Generated image']")
-        page.wait_for_selector("button:has-text('Download')")
+        # Click the most recent image generated
+        print("[🖼️] Waiting for generated image...")
+        image_selector = "img[alt='Generated image']"
+        page.wait_for_selector(image_selector, timeout=30000)
+        images = page.locator(image_selector)
+        if images.count() == 0:
+            raise RuntimeError("❌ No image found.")
+        images.nth(0).click()
+        page.wait_for_timeout(2000)
+
+        # Click the download button
+        print("[⬇️] Downloading image...")
+        page.wait_for_selector("button:has-text('Download')", timeout=10000)
         page.click("button:has-text('Download')")
         page.wait_for_timeout(5000)
 
+        # Find downloaded image
         downloads = os.listdir(os.path.expanduser("~/Downloads"))
         images = [f for f in downloads if f.endswith(".png")]
         if not images:
@@ -71,7 +84,9 @@ def generate_image_and_caption():
         os.rename(src_path, dst_path)
         print(f"[✓] Image saved: {dst_path}")
 
-        page.fill("textarea", f"Write a short poetic mysterious caption for that image.")
+        # Ask Gemini to generate a caption
+        print("[💬] Asking for caption...")
+        page.fill("textarea", "Write a short poetic mysterious caption for that image.")
         page.press("textarea", "Enter")
         page.wait_for_timeout(7000)
 
