@@ -3,94 +3,118 @@ import random
 import requests
 import time
 from datetime import datetime, timedelta
-from gpt4all import GPT4All
 
-GDRIVE_FILE_ID = os.getenv("GDRIVE_FILE_ID")
+# ---- AI image generation ----
+from diffusers import StableDiffusionPipeline
+import torch
+
+# === ENV VARS ===
+GDRIVE_FILE_ID = os.getenv("GDRIVE_FILE_ID")              # for GPT4All model if you ever switch back
 PAGE_ID          = os.getenv("FB_PAGE_ID")
 PAGE_TOKEN       = os.getenv("FB_PAGE_ACCESS_TOKEN")
-CAPTIONS_MODEL   = "ggml-gpt4all-j.bin"
 IMAGES_DIR       = "images"
+CAPTIONS_FILE    = "captions.txt"
 POST_FLAG        = ".posted"
 
-# === Download GPT4All model from Google Drive ===
-def ensure_model_exists():
-    if not os.path.exists(CAPTIONS_MODEL):
-        print("[+] Downloading GPT4All model from Google Drive...")
-        os.system(f"gdown --id {GDRIVE_FILE_ID} -O {CAPTIONS_MODEL}")
-        print("[+] Download complete.")
+# ---- Hashtag pool ----
+HASHTAGS = [
+    "liminalspaces","moody","ethereal","dreamscape","nopeople",
+    "hdr","cinematic","haunting","emptyworlds","surreal"
+]
 
-# === Generate caption using GPT4All (local .bin only) ===
+# === 1) Image pipeline (load once) ===
+_pipe = None
+def get_sd_pipe():
+    global _pipe
+    if _pipe is None:
+        model_id = "runwayml/stable-diffusion-v1-5"
+        device   = "cuda" if torch.cuda.is_available() else "cpu"
+        _pipe = StableDiffusionPipeline.from_pretrained(model_id)
+        _pipe = _pipe.to(device)
+    return _pipe
+
+# === 2) Generate a new liminal image ===
+def generate_image():
+    # ensure folder
+    os.makedirs(IMAGES_DIR, exist_ok=True)
+
+    # choose style
+    style = random.choice(["moody", "light"])
+    if style == "moody":
+        prompt = "A dark, empty corridor under a neon moon, eerie shadows, liminal space, cinematic"
+    else:
+        prompt = "A bright, abandoned hallway with soft morning light, ethereal liminal space, high detail"
+
+    pipe = get_sd_pipe()
+    img   = pipe(prompt).images[0]
+
+    # save with timestamp
+    fname = f"{int(time.time())}.png"
+    path  = os.path.join(IMAGES_DIR, fname)
+    img.save(path)
+    print(f"[+] Generated image ({style}): {path}")
+    return path
+
+# === 3) Caption from file ===
 def generate_caption():
-    ensure_model_exists()
-    prompt = "Write a one-sentence mysterious, dark, poetic, relatable thought."
-    # Tell GPT4All: the model file is named CAPTIONS_MODEL and lives in "."
-    model = GPT4All(model_name=CAPTIONS_MODEL, model_path=".", allow_download=False)
-    with model.chat_session():
-        output = model.generate(prompt, max_tokens=50)
-        return output.strip()
+    if os.path.exists(CAPTIONS_FILE):
+        lines = [l.strip() for l in open(CAPTIONS_FILE, encoding="utf-8") if l.strip()]
+        return random.choice(lines)
+    return "An empty hallway whispers secrets to the wandering soul."
 
-# === Create /images folder if missing ===
-def ensure_image_folder():
-    if not os.path.exists(IMAGES_DIR):
-        os.makedirs(IMAGES_DIR)
-        print(f"[⚠️] Created empty /{IMAGES_DIR}/ folder. Please add some images before the next post.")
+# === 4) Build hashtags string ===
+def generate_hashtags(n=5):
+    return " ".join("#"+tag for tag in random.sample(HASHTAGS, k=n))
 
-# === Pick random image from /images/ folder ===
-def get_random_image():
-    ensure_image_folder()
-    files = [f for f in os.listdir(IMAGES_DIR) if f.lower().endswith((".png", ".jpg", ".jpeg"))]
-    if not files:
-        raise FileNotFoundError(f"No images found in /{IMAGES_DIR}/ folder.")
-    return os.path.join(IMAGES_DIR, random.choice(files))
-
-# === Upload image to Facebook ===
-def post_to_facebook(image_path, caption):
-    print(f"[+] Posting image: {image_path}")
+# === 5) Post to Facebook ===
+def post_to_facebook(image_path, caption, hashtags):
+    text = f"{caption}\n\n{hashtags}"
+    print(f"[+] Posting image: {image_path}\n    Caption: {caption}\n    Tags: {hashtags}")
     with open(image_path, "rb") as img:
         files = {"source": img}
-        data = {"caption": caption, "access_token": PAGE_TOKEN}
-        url = f"https://graph.facebook.com/{PAGE_ID}/photos"
-        response = requests.post(url, files=files, data=data)
-    if response.status_code == 200:
-        print("[✅] Post successful:", response.json()["post_id"])
+        data  = {"caption": text, "access_token": PAGE_TOKEN}
+        url   = f"https://graph.facebook.com/{PAGE_ID}/photos"
+        resp  = requests.post(url, files=files, data=data)
+    if resp.ok:
+        print("[✅] Posted:", resp.json().get("post_id"))
     else:
-        print("[❌] Post failed:", response.text)
+        print("[❌] Post failed:", resp.text)
 
-# === One-time post ===
-def run_once():
-    caption = generate_caption()
-    image   = get_random_image()
-    post_to_facebook(image, caption)
-
-# === Prevent auto-repost on Railway redeploy ===
+# === 6) First-run guard ===
 def already_posted():
     return os.path.exists(POST_FLAG)
 
 def mark_posted():
-    with open(POST_FLAG, "w") as f:
-        f.write("posted")
+    open(POST_FLAG, "w").write("posted")
 
-# === Schedule future posts randomly ===
+# === 7) One-off post ===
+def run_once():
+    img  = generate_image()
+    cap  = generate_caption()
+    tags = generate_hashtags()
+    post_to_facebook(img, cap, tags)
+
+# === 8) Scheduler ===
 def schedule_posts():
-    daily_posts = random.randint(1, 4)
-    print(f"[+] Scheduling {daily_posts} post(s) for today.")
-    now = datetime.now()
-    for i in range(daily_posts):
-        hours_later = random.randint(1, 24)
-        post_time = now + timedelta(hours=hours_later)
-        print(f"    ⏰ Post {i+1} scheduled for {post_time.strftime('%H:%M')}")
-        time.sleep((post_time - datetime.now()).total_seconds())
+    count = random.randint(1,4)
+    print(f"[+] Scheduling {count} posts today.")
+    for i in range(count):
+        hours = random.randint(1,24)
+        print(f"    ⏰ Waiting {hours}h until next post…")
+        time.sleep(hours * 3600)
         run_once()
 
-# === Main loop ===
+# === Main ===
 if __name__ == "__main__":
-    ensure_image_folder()
+    os.makedirs(IMAGES_DIR, exist_ok=True)
 
+    # Skip duplicate first-run post on redeploy
     if not already_posted():
         run_once()
         mark_posted()
     else:
-        print("[🛑] Initial post already made — skipping first-run duplicate.")
+        print("[🛑] Initial post already made — skipping.")
 
+    # Enter perpetual scheduler loop
     while True:
         schedule_posts()
