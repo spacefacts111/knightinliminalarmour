@@ -1,4 +1,3 @@
-# PATCHED main.py would go here
 import os
 import json
 import random
@@ -47,7 +46,8 @@ def generate_image_and_caption():
         print("[DEBUG] Launching browser")
         browser = p.chromium.launch(headless=True)
         print("[DEBUG] Browser launched, creating context")
-        context = browser.new_context(accept_downloads=True, downloads_path=DOWNLOADS_DIR)
+        # Only accept downloads here; we'll save them manually
+        context = browser.new_context(accept_downloads=True)
 
         # Load cookies
         with open(COOKIES_PATH, "r") as f:
@@ -77,6 +77,8 @@ def generate_image_and_caption():
         with page.expect_download(timeout=30000) as download_info:
             page.click("button:has-text('Download')")
         download = download_info.value
+
+        # Save into your DOWNLOADS_DIR
         filename = download.suggested_filename
         dst_path = os.path.join(IMAGE_DIR, filename)
         download.save_as(dst_path)
