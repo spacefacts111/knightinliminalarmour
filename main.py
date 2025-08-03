@@ -42,20 +42,26 @@ def generate_image_and_caption():
     print("[DEBUG] Generating image + caption")
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        # Use storage_state for cookies + localStorage
+
+        # Gemini context with your saved session
         gem_context = browser.new_context(storage_state=GEMINI_STORAGE)
         gem_page = gem_context.new_page()
         gem_page.goto("https://gemini.google.com/app")
         gem_page.keyboard.press("Escape")
-        gem_page.wait_for_selector("div.ql-editor[contenteditable='true']", timeout=60000)
-        editor = gem_page.locator("div.ql-editor[contenteditable='true']")
+
+        # === Updated selector ===
+        # Wait for the actual prompt box by its aria-label
+        gem_page.wait_for_selector("div[aria-label='Enter a prompt here']", timeout=120000)
+        editor = gem_page.locator("div[aria-label='Enter a prompt here']")
         prompt = random_prompt()
+        print(f"[DEBUG] Prompt: {prompt}")
         editor.click(force=True)
         editor.fill(prompt, force=True)
         editor.press("Enter")
 
+        # Wait for the generated image element
         selector = "div.attachment-container.generated-images img.image"
-        gem_page.wait_for_selector(selector, timeout=60000)
+        gem_page.wait_for_selector(selector, timeout=120000)
         img_elem = gem_page.locator(selector).nth(-1)
         src = img_elem.get_attribute("src")
 
