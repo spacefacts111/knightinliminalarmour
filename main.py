@@ -40,7 +40,6 @@ def generate_image_and_caption(prompt="liminal space aesthetic, no people"):
         if "accounts.google.com" in page.url:
             raise Exception("Gemini session expired. Update cookies.json")
 
-        log("Looking for prompt input box...")
         prompt_selectors = [
             'div.ql-editor[aria-label="Enter a prompt here"]',
             'rich-textarea[aria-label="Enter a prompt here"]',
@@ -77,12 +76,17 @@ def generate_image_and_caption(prompt="liminal space aesthetic, no people"):
             img_url = valid_imgs[0]
             log(f"Image URL retrieved: {img_url}")
 
-            caption_elem = page.query_selector("div.model-response-text")
-            caption = caption_elem.inner_text().strip() if caption_elem else "A liminal space."
+            # Force Gemini caption load
+            caption_elem = page.locator("div.model-response-text").first
+            caption_elem.wait_for(timeout=10000)
+            caption = caption_elem.inner_text().strip()
+
+            if not caption:
+                raise Exception("❌ Gemini generated no caption.")
             log(f"Caption retrieved: {caption}")
 
         except PlaywrightTimeout:
-            raise Exception("❌ Image appeared too slowly or wasn’t detected.")
+            raise Exception("❌ Image or caption timed out.")
 
         browser.close()
         return img_url, caption
@@ -108,7 +112,8 @@ def post_to_facebook_with_cookies(img_url, caption):
 
         try:
             log("Clicking 'Photo/video' button...")
-            page.locator("text=Photo/video").click()
+            # ✅ Corrected button logic
+            page.locator("span:has-text('Photo/video')").click()
         except:
             raise Exception("Couldn't find 'Photo/video' button. Facebook layout may have changed.")
 
