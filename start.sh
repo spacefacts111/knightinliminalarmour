@@ -1,5 +1,5 @@
 #!/bin/bash
-echo "📦 Installing Playwright..."
+echo "Installing Playwright..."
 playwright install --with-deps
-echo "🚀 Starting bot..."
+echo "Running bot..."
 python3 main.py
