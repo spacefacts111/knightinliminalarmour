@@ -76,7 +76,6 @@ def generate_image_and_caption(prompt="liminal space aesthetic, no people"):
             img_url = valid_imgs[0]
             log(f"Image URL retrieved: {img_url}")
 
-            # Optional caption (placeholder for now)
             caption = "A liminal space."
 
         except PlaywrightTimeout:
@@ -106,9 +105,10 @@ def post_to_facebook_with_cookies(img_url, caption):
 
         try:
             log("Clicking 'Photo/video' button...")
-            page.locator("span:has-text('Photo/video')").click()
+            page.locator(":text('Photo/video')").first.click()
         except:
-            raise Exception("Couldn't find 'Photo/video' button. Facebook layout may have changed.")
+            page.screenshot(path="fb_post_fail.png")
+            raise Exception("❌ Couldn't find 'Photo/video' button. Screenshot saved.")
 
         log("Uploading image...")
         with page.expect_file_chooser() as fc_info:
@@ -118,14 +118,39 @@ def post_to_facebook_with_cookies(img_url, caption):
 
         page.wait_for_timeout(5000)
 
-        log("Filling in caption...")
-        caption_box = page.locator("div[role='textbox']").first
-        caption_box.fill(caption)
+        # Try multiple caption box selectors
+        log("Finding caption box...")
+        try:
+            caption_box = page.locator("div[role='textbox']").first
+            caption_box.fill(caption)
+        except:
+            try:
+                caption_box = page.locator("textarea").first
+                caption_box.fill(caption)
+            except:
+                page.screenshot(path="fb_caption_fail.png")
+                raise Exception("❌ Couldn't find caption input box. Screenshot saved.")
 
-        log("Clicking 'Post' button...")
-        page.locator("text=Post").last.click()
+        # Optional: Click "Next" if shown
+        try:
+            next_btn = page.locator(":text('Next')").first
+            if next_btn.is_visible():
+                log("Clicking 'Next' button...")
+                next_btn.click()
+                page.wait_for_timeout(2000)
+        except:
+            log("No 'Next' button found. Continuing...")
+
+        # Try multiple post button variations
+        try:
+            log("Clicking 'Post' button...")
+            post_btn = page.locator(":text('Post')").last
+            post_btn.click()
+        except:
+            page.screenshot(path="fb_postbtn_fail.png")
+            raise Exception("❌ Couldn't find 'Post' button. Screenshot saved.")
+
         page.wait_for_timeout(5000)
-
         browser.close()
         log("✅ Posted to Facebook with cookies!")
 
