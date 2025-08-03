@@ -5,25 +5,25 @@ import requests
 import time
 from datetime import datetime, timedelta
 
-# ── DEBUG & ENV VARS ────────────────────────────────────────────────────────
+# ── ENV & DEBUG ─────────────────────────────────────────────────────────────
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
 if not REPLICATE_API_TOKEN:
     print("❌ REPLICATE_API_TOKEN missing!", file=sys.stderr)
     sys.exit(1)
 
-PAGE_ID     = os.getenv("FB_PAGE_ID")
-PAGE_TOKEN  = os.getenv("FB_PAGE_ACCESS_TOKEN")
-IMAGES_DIR  = "images"
+PAGE_ID       = os.getenv("FB_PAGE_ID")
+PAGE_TOKEN    = os.getenv("FB_PAGE_ACCESS_TOKEN")
+IMAGES_DIR    = "images"
 CAPTIONS_FILE = "captions.txt"
-POST_FLAG   = ".posted"
+POST_FLAG     = ".posted"
 
-# ── Hashtags ───────────────────────────────────────────────────────────────
+# ── Hashtag pool ────────────────────────────────────────────────────────────
 HASHTAGS = [
     "liminalspaces","moody","ethereal","dreamscape","nopeople",
     "hdr","cinematic","haunting","emptyworlds","surreal"
 ]
 
-# ── Cleanup images older than 3 hours ────────────────────────────────────────
+# ── Clean up old images ──────────────────────────────────────────────────────
 def clean_old_images():
     now    = time.time()
     cutoff = now - 3*3600
@@ -33,7 +33,7 @@ def clean_old_images():
             os.remove(path)
             print(f"[🗑️] Deleted old image: {path}")
 
-# ── Generate / download image via Replicate ────────────────────────────────
+# ── Generate & download via Replicate ────────────────────────────────────────
 def generate_image():
     os.makedirs(IMAGES_DIR, exist_ok=True)
     clean_old_images()
@@ -47,45 +47,58 @@ def generate_image():
     )
     print(f"[+] Generating {style} image via Replicate…")
 
-    # 1) fetch latest model version ID
-    mdl = requests.get(
-        "https://api.replicate.com/v1/models/stability-ai/stable-diffusion",
-        headers={"Authorization": f"Token {REPLICATE_API_TOKEN}"}
-    ).json()
-    version = mdl["latest_version"]["id"]
-
-    # 2) submit prediction
-    pred = requests.post(
+    # 1) Submit prediction
+    post_resp = requests.post(
         "https://api.replicate.com/v1/predictions",
         headers={
             "Authorization": f"Token {REPLICATE_API_TOKEN}",
             "Content-Type": "application/json"
         },
-        json={"version": version, "input": {"prompt": prompt}}
-    ).json()
+        json={
+            "model": "stability-ai/stable-diffusion",
+            "version": "latest",
+            "input": {"prompt": prompt}
+        }
+    )
+    if not post_resp.ok:
+        raise RuntimeError(f"❌ Replicate POST error {post_resp.status_code}: {post_resp.text}")
+    pred = post_resp.json()
+    pred_id  = pred.get("id")
+    poll_url = pred.get("urls", {}).get("get")
 
-    # 3) poll until done
-    while pred["status"] not in ("succeeded","failed"):
+    if not pred_id or not poll_url:
+        raise RuntimeError(f"❌ Unexpected Replicate response: {pred}")
+
+    # 2) Poll until done
+    while True:
+        get_resp = requests.get(poll_url, headers={"Authorization": f"Token {REPLICATE_API_TOKEN}"})
+        if not get_resp.ok:
+            raise RuntimeError(f"❌ Replicate GET error {get_resp.status_code}: {get_resp.text}")
+        pred = get_resp.json()
+        status = pred.get("status")
+        if status in ("succeeded","failed"):
+            break
         time.sleep(1)
-        pred = requests.get(
-            f"https://api.replicate.com/v1/predictions/{pred['id']}",
-            headers={"Authorization": f"Token {REPLICATE_API_TOKEN}"}
-        ).json()
 
-    if pred["status"] == "failed":
-        raise RuntimeError("Replicate generation failed: " + pred.get("error",""))
+    if status == "failed":
+        raise RuntimeError("❌ Replicate generation failed: " + str(pred.get("error")))
 
-    # 4) download the output image
-    img_url = pred["output"][0]
+    # 3) Download output
+    output = pred.get("output")
+    if not output or not isinstance(output, list):
+        raise RuntimeError(f"❌ Missing output in Replicate response: {pred}")
+
+    img_url = output[0]
     img_data = requests.get(img_url).content
-    filename = f"{int(time.time())}.png"
-    path = os.path.join(IMAGES_DIR, filename)
+
+    fname = f"{int(time.time())}.png"
+    path  = os.path.join(IMAGES_DIR, fname)
     with open(path, "wb") as f:
         f.write(img_data)
     print(f"[✅] Generated image saved: {path}")
     return path
 
-# ── Caption & hashtags ────────────────────────────────────────────────────
+# ── Caption & hashtags ──────────────────────────────────────────────────────
 def generate_caption():
     if os.path.exists(CAPTIONS_FILE):
         lines = [l.strip() for l in open(CAPTIONS_FILE, encoding="utf-8") if l.strip()]
@@ -95,10 +108,10 @@ def generate_caption():
 def generate_hashtags(n=5):
     return " ".join("#"+tag for tag in random.sample(HASHTAGS, k=n))
 
-# ── Facebook posting ──────────────────────────────────────────────────────
+# ── Facebook upload ─────────────────────────────────────────────────────────
 def post_to_facebook(image_path, caption, hashtags):
     text = f"{caption}\n\n{hashtags}"
-    print(f"[+] Posting {image_path}\n    \"{caption}\"\n    {hashtags}")
+    print(f"[+] Posting {image_path}\n    Caption: {caption}\n    {hashtags}")
     with open(image_path, "rb") as img:
         resp = requests.post(
             f"https://graph.facebook.com/{PAGE_ID}/photos",
@@ -110,11 +123,11 @@ def post_to_facebook(image_path, caption, hashtags):
     else:
         print("[❌] Post failed:", resp.text)
 
-# ── First-run guard & scheduler ────────────────────────────────────────────
+# ── First-run guard & scheduler ─────────────────────────────────────────────
 def already_posted():
     return os.path.exists(POST_FLAG)
 def mark_posted():
-    open(POST_FLAG,"w").write("posted")
+    open(POST_FLAG, "w").write("posted")
 
 def run_once():
     img  = generate_image()
@@ -131,6 +144,7 @@ def schedule_posts():
         time.sleep(hrs*3600)
         run_once()
 
+# ── Entrypoint ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     os.makedirs(IMAGES_DIR, exist_ok=True)
 
@@ -138,7 +152,7 @@ if __name__ == "__main__":
         run_once()
         mark_posted()
     else:
-        print("[🛑] Initial post done—skipping duplicate.")
+        print("[🛑] Initial post done—skipping.")
 
     while True:
         schedule_posts()
